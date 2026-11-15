@@ -1,0 +1,31 @@
+{
+  "name": "Pydroid 3 Web - Python IDE",
+  "short_name": "Pydroid 3",
+  "description": "Python IDE & AI Debugger cho Android",
+  "start_url": "/",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone", "minimal-ui"],
+  "background_color": "#13131c",
+  "theme_color": "#13131c",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
