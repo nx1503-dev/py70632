@@ -71,21 +71,6 @@ export interface SavedFile {
   lastModified: number;
 }
 
-export type SnippetCategory = 'template' | 'algorithm' | 'utility' | 'data' | 'custom';
-
-export interface SnippetItem {
-  id: string;
-  title: string;
-  code: string;
-  description?: string;
-  category: SnippetCategory;
-  tags?: string[];
-  isFavorite?: boolean;
-  createdAt: number;
-  updatedAt: number;
-}
-
-
 export interface ChatMessage {
   id: string;
   sender: 'user' | 'assistant';

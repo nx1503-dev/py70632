@@ -3385,6 +3385,9 @@ app.all('/api/ai/status', async (req, res) => {
 
   const errorInfo = extractFriendlyGeminiError(lastError);
   const redactedRaw = (errorInfo.raw || '').replace(/AIza[A-Za-z0-9_-]{10,}/g, '[REDACTED_KEY]');
+  const rawEnvGemini = (process.env.GEMINI_API_KEY || '').trim();
+  const rawEnvGoogle = (process.env.GOOGLE_API_KEY || '').trim();
+  const rawEnvApiKey = (process.env.API_KEY || '').trim();
   return res.json({
     ok: false,
     model: CANDIDATE_MODELS[0],
@@ -3392,7 +3395,12 @@ app.all('/api/ai/status', async (req, res) => {
     diagnostic: {
       httpStatus: errorInfo.code ?? null,
       keyPresent: hasKey,
-      keySource: process.env.GEMINI_API_KEY ? 'GEMINI_API_KEY' : (process.env.GOOGLE_API_KEY ? 'GOOGLE_API_KEY' : 'NONE'),
+      keySource: rawEnvGemini ? 'GEMINI_API_KEY' : (rawEnvGoogle ? 'GOOGLE_API_KEY' : 'NONE'),
+      geminiKeyLen: rawEnvGemini.length,
+      geminiKeyStartsAIza: rawEnvGemini.startsWith('AIza'),
+      googleKeyLen: rawEnvGoogle.length,
+      apiKeyLen: rawEnvApiKey.length,
+      apiKeyStartsAIza: rawEnvApiKey.startsWith('AIza'),
       rawError: redactedRaw.slice(0, 350),
     },
   });

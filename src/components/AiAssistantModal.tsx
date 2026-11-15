@@ -15,11 +15,12 @@ import {
   CheckCircle,
   Bug,
   Save,
-  Terminal,
+  Settings,
 } from 'lucide-react';
+import type { User as FirebaseUser } from 'firebase/auth';
 import { ChatMessage } from '../types';
-import { sendGeminiChatStream } from '../utils/geminiClient';
-import pydroidAppIcon from '../assets/images/pydroid_app_icon_1794475208432.jpg';
+import { sendAiChatRequest, streamAiChatRequest } from '../utils/geminiClient';
+import { testServerAiStatus } from '../utils/apiConfig';
 
 interface AiAssistantModalProps {
   isOpen: boolean;
@@ -28,6 +29,8 @@ interface AiAssistantModalProps {
   currentFileName: string;
   onApplyCode: (code: string) => void;
   lastErrorText?: string;
+  googleUser?: FirebaseUser | null;
+  onOpenSettings?: () => void;
 }
 
 const DEFAULT_FIX_ERROR_PROMPT =
@@ -58,6 +61,8 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
   currentFileName,
   onApplyCode,
   lastErrorText,
+  googleUser,
+  onOpenSettings,
 }) => {
   const [savedCustomPrompt, setSavedCustomPrompt] = useState<string>(() => getStoredDefaultPrompt());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -67,6 +72,12 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
   const [copiedSnippetId, setCopiedSnippetId] = useState<string | null>(null);
   const [appliedSnippetId, setAppliedSnippetId] = useState<string | null>(null);
   const [isSavedFeedback, setIsSavedFeedback] = useState(false);
+  const [aiConnStatus, setAiConnStatus] = useState<{
+    checking: boolean;
+    ok?: boolean;
+    model?: string;
+    message?: string;
+  }>({ checking: false });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -77,6 +88,17 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages, isLoading, isOpen]);
+
+  // Lắng nghe phím Escape (Esc) để thoát tab Trợ lý AI ngay lập tức
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
 
   // Lưu câu hỏi tùy chỉnh làm mặc định vào localStorage
   const handleSaveAsDefault = (textToSave?: string) => {
@@ -120,7 +142,7 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
           {
             id: 'msg_initial_welcome',
             sender: 'assistant',
-            text: `👋 **Xin chào! Mình là Trợ lý AI Lập trình Python (Gemini AI).**\n\nMình đã sẵn sàng phân tích file **\`${currentFileName}\`** (${currentCode.split('\n').filter(Boolean).length} dòng mã).\n\n💡 **Ô chat bên dưới đã điền câu hỏi mặc định của bạn:**  \n*"${activePrompt}"*  \n\n👉 Bạn có thể **tự do thay đổi nội dung**, bấm **💾 Lưu câu này** để ghi nhớ cho lần sau, hoặc nhấn **Gửi** ngay để bắt đầu!`,
+            text: `👋 **Xin chào! Mình là Trợ lý AI Lập trình Python (Gemini 3.8).**\n\nMình đã sẵn sàng phân tích file **\`${currentFileName}\`** (${currentCode.split('\n').filter(Boolean).length} dòng mã).\n\n💡 **Ô chat bên dưới đã điền câu hỏi mặc định của bạn:**  \n*"${activePrompt}"*  \n\n👉 Bạn có thể **tự do thay đổi nội dung**, bấm **💾 Lưu câu này** để ghi nhớ cho lần sau, hoặc nhấn **Gửi** ngay để bắt đầu!`,
             timestamp: Date.now(),
           },
         ]);
@@ -129,10 +151,38 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
       setTimeout(() => {
         inputRef.current?.focus();
       }, 150);
+
+      let cancelled = false;
+      setAiConnStatus({ checking: true });
+      testServerAiStatus()
+        .then((res) => {
+          if (!cancelled) {
+            setAiConnStatus({
+              checking: false,
+              ok: res.ok,
+              model: res.model,
+              message: res.message,
+            });
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setAiConnStatus({
+              checking: false,
+              ok: false,
+              model: 'local-pep8-engine',
+              message: 'Không thể kiểm tra trạng thái kết nối Gemini AI.',
+            });
+          }
+        });
+
+      return () => {
+        cancelled = true;
+      };
     }
   }, [isOpen]);
 
-  // Core function to send chat to backend API with streaming
+  // Core function to send chat to backend API
   const triggerAiChat = async (userPrompt: string, instruction = '') => {
     if (!userPrompt.trim()) return;
     setIsLoading(true);
@@ -148,51 +198,79 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
     setMessages(newMessages);
 
     const assistantMsgId = `msg_${Date.now()}_a`;
-    const initialAssistantMsg: ChatMessage = {
-      id: assistantMsgId,
-      sender: 'assistant',
-      text: '',
-      timestamp: Date.now(),
-    };
-    setMessages([...newMessages, initialAssistantMsg]);
+    let accumulated = '';
 
     try {
-      const historyForGemini = newMessages.map((m) => ({
-        role: m.sender === 'user' ? ('user' as const) : ('model' as const),
-        content: m.text,
-      }));
-
-      await sendGeminiChatStream(
-        historyForGemini,
-        userPrompt.trim(),
-        (chunk) => {
-          setMessages((prev) =>
-            prev.map((m) => (m.id === assistantMsgId ? { ...m, text: m.text + chunk } : m))
-          );
-        },
+      const responseText = await streamAiChatRequest(
         {
           code: currentCode,
-          errorText: lastErrorText,
+          messages: newMessages.map((m) => ({
+            sender: m.sender,
+            text: m.text,
+          })),
           instruction,
+          errorText: lastErrorText,
+        },
+        (chunkText) => {
+          accumulated = chunkText;
+          setMessages((prev) => {
+            const existingIdx = prev.findIndex((m) => m.id === assistantMsgId);
+            if (existingIdx !== -1) {
+              const updated = [...prev];
+              updated[existingIdx] = {
+                ...updated[existingIdx],
+                text: chunkText,
+              };
+              return updated;
+            } else {
+              return [
+                ...prev,
+                {
+                  id: assistantMsgId,
+                  sender: 'assistant',
+                  text: chunkText,
+                  timestamp: Date.now(),
+                },
+              ];
+            }
+          });
         }
       );
+
+      const finalText = (responseText && responseText.trim()) || accumulated;
+      if (finalText) {
+        setMessages((prev) => {
+          const existingIdx = prev.findIndex((m) => m.id === assistantMsgId);
+          if (existingIdx !== -1) {
+            const updated = [...prev];
+            updated[existingIdx] = {
+              ...updated[existingIdx],
+              text: finalText,
+            };
+            return updated;
+          } else {
+            return [
+              ...prev,
+              {
+                id: assistantMsgId,
+                sender: 'assistant',
+                text: finalText,
+                timestamp: Date.now(),
+              },
+            ];
+          }
+        });
+      }
     } catch (err: any) {
-      const errMsgText = err?.message || 'Không thể liên lạc với Gemini';
-      const isDetailed = errMsgText.includes('Cài đặt') || errMsgText.includes('APK');
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantMsgId
-            ? {
-                ...m,
-                text: m.text
-                  ? `${m.text}\n\n⚠️ *[Kết nối bị ngắt]:* ${errMsgText}`
-                  : (isDetailed
-                      ? `⚠️ ${errMsgText}`
-                      : `⚠️ Lỗi kết nối AI: ${errMsgText}. Vui lòng thử lại.`),
-              }
-            : m
-        )
-      );
+      if (!accumulated) {
+        const errMsg: ChatMessage = {
+          id: `msg_${Date.now()}_err`,
+          sender: 'assistant',
+          text: '⚠️ Không thể kết nối với máy chủ AI. Vui lòng kiểm tra lại kết nối mạng.',
+          timestamp: Date.now(),
+        };
+        setMessages((prev) => [...prev, errMsg]);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -212,16 +290,12 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
     }
   };
 
-  // Kích hoạt giải thích mã nguồn: Phân tích và giải thích toàn diện mã nguồn bằng AI
-  const handleTriggerExplainCode = (autoRun = true) => {
+  // Kích hoạt giải thích mã nguồn: Điền câu hỏi vào ô chat để người dùng tự do sửa
+  const handleTriggerExplainCode = () => {
     setActiveFeature('explain');
     const activePrompt = getStoredDefaultPrompt();
     setInputText(activePrompt);
-    if (autoRun && !isLoading) {
-      triggerAiChat(activePrompt, 'explain_source_code');
-    } else {
-      inputRef.current?.focus();
-    }
+    inputRef.current?.focus();
   };
 
   // Kích hoạt tối ưu chuẩn PEP 8: Điền câu hỏi vào ô chat để người dùng tự do sửa
@@ -248,7 +322,10 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
 
   const handleSendMessage = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const promptToSend = inputText.trim();
+    let promptToSend = inputText.trim();
+    if (!promptToSend && savedCustomPrompt?.trim()) {
+      promptToSend = savedCustomPrompt.trim();
+    }
     if (!promptToSend || isLoading) return;
 
     // Tự động lưu câu hỏi này nếu người dùng đã thay đổi nó khác với DEFAULT
@@ -264,8 +341,12 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
 
     const lower = promptToSend.toLowerCase();
     const isFixKeywords = /s[uư][aảã].*l[oô][iỉĩ]|l[oô][iỉĩ]|fix|bug|debug|g[oỡ].*l[oô][iỉĩ]|d[oò]ng.*m[aấ]y|kh[oô]ng.*ch[aạ]y/i.test(lower);
+    const isCustom = promptToSend !== DEFAULT_EXPLAIN_PROMPT &&
+      promptToSend !== DEFAULT_FIX_ERROR_PROMPT &&
+      promptToSend !== DEFAULT_PEP8_PROMPT &&
+      promptToSend !== DEFAULT_ANALYZE_FIX_PROMPT;
 
-    let instructionToSend = 'explain_source_code';
+    let instructionToSend = isCustom ? 'custom_chat' : 'explain_source_code';
     if (activeFeature === 'fix_error' || isFixKeywords) {
       instructionToSend = 'fix_error';
     } else if (activeFeature === 'analyze_fix_clean') {
@@ -443,72 +524,69 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-2 sm:p-4 animate-in fade-in">
-      <div className="bg-[#141320] border-2 border-[#3b3457] rounded-2xl w-full max-w-2xl h-[92vh] max-h-[820px] flex flex-col text-gray-200 shadow-2xl overflow-hidden font-sans">
-        {/* Header - Thiết kế chống tràn co giãn linh hoạt trên mobile */}
-        <div className="h-14 border-b border-[#2c2742] px-2.5 sm:px-4 flex items-center justify-between shrink-0 bg-[#1b192c] gap-1.5 overflow-hidden">
-          <div className="flex items-center space-x-2 min-w-0 flex-1 overflow-hidden">
-            <img
-              src={pydroidAppIcon}
-              alt="Pydroid 3 Icon"
-              className="w-8 h-8 rounded-xl object-cover shadow-md border border-amber-400/50 shrink-0"
-            />
-            <div className="min-w-0 flex-1 overflow-hidden">
-              <div className="flex items-center space-x-1.5 min-w-0">
-                <h3 className="font-extrabold text-xs sm:text-base text-amber-300 truncate">
+    <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-2 sm:p-4 animate-in fade-in"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-[#141320] border-2 border-[#3b3457] rounded-2xl w-full max-w-2xl h-[92vh] max-h-[820px] flex flex-col text-gray-200 shadow-2xl overflow-hidden font-sans"
+      >
+        {/* Header */}
+        <div className="h-14 border-b border-[#2c2742] px-3 sm:px-4 flex items-center justify-between shrink-0 bg-[#1b192c] gap-2">
+          <div className="flex items-center space-x-2 min-w-0 flex-1 mr-1">
+            <div className="p-1.5 sm:p-2 bg-gradient-to-tr from-amber-400 to-yellow-400 text-black rounded-xl shadow-md shrink-0">
+              <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 fill-current" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center space-x-1.5">
+                <h3 className="font-extrabold text-xs sm:text-sm text-amber-300 truncate">
                   Trợ lý AI Lập trình Python
                 </h3>
-                <span className="px-1.5 py-0.5 bg-purple-900/60 border border-purple-500/40 text-purple-300 text-[9px] sm:text-[10px] font-bold rounded-full shrink-0">
-                  Gemini AI
+                <span className="px-1.5 py-0.2 bg-purple-900/60 border border-purple-500/40 text-purple-300 text-[9px] sm:text-[10px] font-bold rounded-full shrink-0">
+                  Gemini 3.8
                 </span>
               </div>
-              <p className="text-[10px] sm:text-[11px] text-gray-400 flex items-center space-x-1 min-w-0 truncate">
+              <p className="text-[10px] sm:text-[11px] text-gray-400 flex items-center space-x-1.5 truncate">
                 <FileCode className="w-3 h-3 text-sky-400 shrink-0" />
-                <span className="truncate">Đang đọc: <strong className="text-gray-200">{currentFileName}</strong> ({currentCode.split('\n').length} dòng)</span>
+                <span className="truncate">Đang đọc: <strong className="text-gray-200">{currentFileName}</strong></span>
+                {googleUser?.email && (
+                  <span className="text-emerald-300/90 font-medium truncate hidden sm:inline">
+                    • Google: {googleUser.email}
+                  </span>
+                )}
               </p>
             </div>
           </div>
 
-          <div className="flex items-center space-x-1 sm:space-x-1.5 shrink-0 z-10">
-            {/* Chẩn đoán kết nối Gemini Server */}
-            <button
-              onClick={() => {
-                onClose();
-                if (typeof window !== 'undefined') {
-                  window.dispatchEvent(new CustomEvent('pydroid:run-gemini-diagnostic'));
-                }
-              }}
-              className="p-1.5 sm:p-2 text-gray-400 hover:text-amber-300 hover:bg-[#28233d] rounded-xl transition cursor-pointer shrink-0"
-              title="Chạy chẩn đoán kết nối máy chủ Gemini AI ra Terminal"
-            >
-              <Terminal className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-            </button>
-
+          <div className="flex items-center space-x-1.5 shrink-0">
             {/* Làm mới cuộc trò chuyện */}
             <button
               onClick={handleResetChat}
-              className="p-1.5 sm:p-2 text-gray-400 hover:text-amber-300 hover:bg-[#28233d] rounded-xl transition cursor-pointer shrink-0"
+              className="p-1.5 text-gray-400 hover:text-amber-300 hover:bg-[#28233d] rounded-xl transition cursor-pointer"
               title="Làm mới cuộc trò chuyện (Bắt đầu phiên làm việc mới)"
             >
-              <RotateCcw className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+              <RotateCcw className="w-4 h-4" />
             </button>
 
-            {/* Nút Đóng tab nổi bật - Luôn cố định, hiển thị rõ ràng 100% không bị che */}
+            {/* Nút Thoát tab nổi bật - Luôn hiển thị trên mọi kích thước màn hình điện thoại */}
             <button
               onClick={onClose}
-              className="px-2.5 sm:px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition flex items-center space-x-1 cursor-pointer shadow-md active:scale-95 shrink-0"
-              title="Đóng tab Trợ lý AI"
+              className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white rounded-xl text-xs font-bold transition flex items-center space-x-1 cursor-pointer shadow-md active:scale-95 shrink-0 border border-rose-400/50"
+              title="Thoát tab Trợ lý AI (Esc)"
             >
-              <X className="w-3.5 h-3.5 text-white" />
-              <span>Đóng tab</span>
+              <X className="w-4 h-4 text-white stroke-[2.5]" />
+              <span>Thoát</span>
             </button>
           </div>
         </div>
 
-        {/* 🌟 CÁC TAB CHỨC NĂNG: SỬA LỖI CODE | GIẢI THÍCH | TỐI ƯU PEP 8 | DÒNG LỖI & NÚT ĐÓNG TAB */}
-        <div className="bg-[#171526] border-b border-[#2b2640] px-3.5 py-2 flex items-center justify-between gap-2 shrink-0 select-none">
-          <div className="flex items-center space-x-1.5 sm:space-x-2 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden flex-1 shrink min-w-0">
-            {/* 1. 🛠️ Nút SỬA LỖI CODE (Nổi bật, khắc phục hoàn toàn lỗi người dùng phản ánh) */}
+        {/* 🌟 CÁC TAB CHỨC NĂNG: SỬA LỖI CODE | GIẢI THÍCH | TỐI ƯU PEP 8 | DÒNG LỖI & NÚT THOÁT TAB */}
+        <div className="bg-[#171526] border-b border-[#2b2640] px-2.5 sm:px-3.5 py-2 flex items-center justify-between gap-1.5 shrink-0 select-none">
+          <div className="flex items-center space-x-1.5 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden flex-1 shrink min-w-0">
+            {/* 1. 🛠️ Nút SỬA LỖI CODE */}
             <button
               onClick={() => handleTriggerFixError(true)}
               disabled={isLoading}
@@ -528,7 +606,7 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
 
             {/* 2. Nút Giải thích mã nguồn */}
             <button
-              onClick={() => handleTriggerExplainCode(true)}
+              onClick={handleTriggerExplainCode}
               disabled={isLoading}
               className={`flex-1 sm:flex-initial flex items-center justify-center space-x-1.5 px-3 py-1.5 rounded-xl font-bold text-xs transition active:scale-95 cursor-pointer shadow-sm shrink-0 ${
                 activeFeature === 'explain'
@@ -581,6 +659,51 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Unified AI Connection Status Bar (Both AI Studio Web & Android APK) */}
+        {!aiConnStatus.checking && aiConnStatus.ok === false && (
+          <div className="bg-amber-950/55 border-b border-amber-500/45 px-3 py-1.5 flex items-center justify-between gap-2 text-[11px] shrink-0">
+            <span className="text-amber-200 truncate" title={aiConnStatus.message}>
+              ⚠️ {aiConnStatus.message || 'Chưa kết nối Gemini AI máy chủ. Đang dùng bộ phân tích PEP 8 dự phòng.'}
+            </span>
+            <div className="flex items-center space-x-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setAiConnStatus({ checking: true });
+                  testServerAiStatus()
+                    .then((res) => setAiConnStatus({ checking: false, ok: res.ok, model: res.model, message: res.message }))
+                    .catch(() => setAiConnStatus({ checking: false, ok: false, model: 'local-pep8-engine', message: 'Không thể kiểm tra kết nối.' }));
+                }}
+                className="p-1 bg-[#252238] hover:bg-[#322e4c] text-amber-300 rounded-lg transition cursor-pointer"
+                title="Kiểm tra lại kết nối"
+              >
+                <RotateCcw className="w-3 h-3" />
+              </button>
+              {onOpenSettings && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenSettings();
+                  }}
+                  className="px-2.5 py-1 bg-amber-400 hover:bg-amber-300 text-black font-extrabold rounded-lg text-[10px] flex items-center space-x-1 shrink-0 cursor-pointer transition active:scale-95"
+                >
+                  <Settings className="w-3 h-3" />
+                  <span>Tài khoản & Cài đặt</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+        {!aiConnStatus.checking && aiConnStatus.ok === true && (
+          <div className="bg-emerald-950/35 border-b border-emerald-500/25 px-3 py-1 flex items-center justify-between gap-2 text-[10px] shrink-0">
+            <span className="text-emerald-300 truncate flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+              <span>Đã kết nối trực tiếp Gemini AI (<strong className="font-mono">{aiConnStatus.model}</strong>)</span>
+            </span>
+          </div>
+        )}
 
         {/* Message Stream */}
         <div className="flex-1 p-3.5 sm:p-4 overflow-y-auto space-y-3.5 bg-[#0e0d17]">
@@ -707,17 +830,17 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
               )}
 
               {/* Nút nạp lại câu đã lưu nếu đang gõ dở câu khác */}
-              {inputText !== savedCustomPrompt && (
+              {savedCustomPrompt && inputText !== savedCustomPrompt && (
                 <button
                   type="button"
                   onClick={() => {
                     setInputText(savedCustomPrompt);
                     inputRef.current?.focus();
                   }}
-                  className="text-amber-400 hover:text-amber-300 underline transition cursor-pointer text-[10px]"
-                  title="Nạp lại câu hỏi mặc định đã lưu của bạn"
+                  className="text-amber-400 hover:text-amber-300 font-medium transition cursor-pointer text-[10px] bg-amber-400/10 px-2 py-0.5 rounded border border-amber-400/30 truncate max-w-[200px]"
+                  title="Nạp lại câu hỏi đã lưu của bạn"
                 >
-                  Nạp câu đã lưu
+                  ⚡ Nạp: "{savedCustomPrompt}"
                 </button>
               )}
 
@@ -736,6 +859,7 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
                   <span>Xoá</span>
                 </button>
               )}
+
             </div>
           </div>
 
@@ -752,13 +876,21 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
                   }
                 }}
                 onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing || (e as any).keyCode === 229) {
+                    return;
+                  }
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     handleSendMessage();
                   }
                 }}
+                lang="vi"
+                spellCheck={false}
+                autoCapitalize="none"
+                autoCorrect="on"
+                autoComplete="on"
                 placeholder="Nhập hoặc tự do chỉnh sửa câu hỏi cho Trợ lý AI (nhấn Enter để gửi)..."
-                className="w-full bg-[#100f1a] text-gray-100 text-xs sm:text-sm p-2.5 pr-8 rounded-xl border border-[#36304f] focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400/50 transition resize-none leading-relaxed"
+                className="w-full bg-[#100f1a] text-gray-100 text-xs sm:text-sm p-2.5 pr-8 rounded-xl border border-[#36304f] focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400/50 transition resize-none leading-relaxed select-text"
               />
               {inputText && (
                 <button
@@ -777,7 +909,7 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
 
             <button
               type="submit"
-              disabled={!inputText.trim() || isLoading}
+              disabled={(!inputText.trim() && !savedCustomPrompt?.trim()) || isLoading}
               className="px-4 py-2.5 h-[54px] bg-gradient-to-r from-amber-400 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 text-black font-extrabold rounded-xl text-xs transition active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-amber-500/20 flex flex-col items-center justify-center space-y-0.5 cursor-pointer shrink-0"
             >
               {isLoading ? (
@@ -794,8 +926,8 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
             </button>
           </form>
 
-          <div className="flex items-center text-[10px] text-gray-400 px-1 pt-0.5">
-            <span className="truncate">💡 Nhấn <kbd className="px-1 py-0.5 bg-[#25213b] text-gray-300 rounded text-[9px] font-mono">Enter</kbd> gửi, <kbd className="px-1 py-0.5 bg-[#25213b] text-gray-300 rounded text-[9px] font-mono">Shift+Enter</kbd> xuống dòng</span>
+          <div className="text-[10px] text-gray-400 px-1 pt-0.5">
+            <span>💡 Nhấn <kbd className="px-1 py-0.5 bg-[#25213b] text-gray-300 rounded text-[9px] font-mono">Enter</kbd> gửi, <kbd className="px-1 py-0.5 bg-[#25213b] text-gray-300 rounded text-[9px] font-mono">Shift+Enter</kbd> xuống dòng</span>
           </div>
         </div>
       </div>

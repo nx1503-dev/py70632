@@ -60,10 +60,10 @@ export const AiDebugModal: React.FC<AiDebugModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="px-2.5 sm:px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition flex items-center space-x-1 cursor-pointer shadow-md active:scale-95 shrink-0"
+            className="px-3 py-1.5 bg-[#251f35] hover:bg-rose-950/90 text-rose-300 hover:text-white border border-rose-500/50 hover:border-rose-400 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 cursor-pointer shadow-sm active:scale-95"
             title="Đóng tab Gỡ lỗi AI"
           >
-            <X className="w-3.5 h-3.5 text-white" />
+            <X className="w-4 h-4 text-rose-400" />
             <span>Đóng tab</span>
           </button>
         </div>
@@ -155,7 +155,15 @@ export const AiDebugModal: React.FC<AiDebugModalProps> = ({
         </div>
 
         {/* Footer Actions */}
-        <div className="h-16 border-t border-[#312f4c] px-4 flex items-center justify-end space-x-2 shrink-0 bg-[#201d30]">
+        <div className="h-16 border-t border-[#312f4c] px-4 flex items-center justify-between space-x-2 shrink-0 bg-[#201d30]">
+          <button
+            onClick={onClose}
+            className="px-3.5 py-2 bg-[#2d2235] hover:bg-rose-950/80 text-rose-300 hover:text-white font-bold rounded-xl text-xs transition border border-rose-500/50 flex items-center space-x-1.5 cursor-pointer active:scale-95 shadow-sm"
+          >
+            <X className="w-4 h-4" />
+            <span>Đóng tab</span>
+          </button>
+
           {result && !isLoading && (
             <div className="flex items-center space-x-2">
               <button

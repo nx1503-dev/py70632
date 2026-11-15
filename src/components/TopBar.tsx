@@ -14,6 +14,7 @@ import {
   ChevronUp,
   ChevronDown,
 } from 'lucide-react';
+import type { User as FirebaseUser } from 'firebase/auth';
 import { ExecutionEngine } from '../types';
 
 interface TopBarProps {
@@ -32,12 +33,14 @@ interface TopBarProps {
   onToggleFullscreen: () => void;
   onOpenAiAssistant: () => void;
   onOpenAutoFix?: () => void;
-  onOpenGoogleWorkspace?: () => void;
-  isGoogleSignedIn?: boolean;
+  onOpenExportApk?: () => void;
   engine?: ExecutionEngine;
   onToggleEngine?: () => void;
   isTopBarCollapsed?: boolean;
   onToggleCollapseTopBar?: () => void;
+  googleUser?: FirebaseUser | null;
+  googleAccessToken?: string | null;
+  onOpenGoogleAccount?: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -56,12 +59,14 @@ export const TopBar: React.FC<TopBarProps> = ({
   onToggleFullscreen,
   onOpenAiAssistant,
   onOpenAutoFix,
-  onOpenGoogleWorkspace,
-  isGoogleSignedIn,
+  onOpenExportApk,
   engine,
   onToggleEngine,
   isTopBarCollapsed,
   onToggleCollapseTopBar,
+  googleUser,
+  googleAccessToken,
+  onOpenGoogleAccount,
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -100,6 +105,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             <span>{activeTab === 'editor' ? 'Editor' : 'Terminal'}</span>
             <span className="text-[9px] opacity-75">➔</span>
           </button>
+
         </div>
 
         {onToggleCollapseTopBar && (
@@ -223,27 +229,6 @@ export const TopBar: React.FC<TopBarProps> = ({
           <FolderOpen className="w-4 h-4 text-sky-400 group-hover:text-sky-200 group-hover:scale-110 transition-all drop-shadow-[0_0_6px_rgba(56,189,248,0.8)]" />
         </button>
 
-        {/* 3.5 🌐 Nút Google Drive, Ghi chú & Tài khoản Google */}
-        {onOpenGoogleWorkspace && (
-          <button
-            onClick={onOpenGoogleWorkspace}
-            className="h-8 min-w-[38px] px-2 flex items-center justify-center bg-gradient-to-b from-[#1f2937] to-[#111827] hover:from-[#2c384a] hover:to-[#1a2232] rounded-lg border-2 border-sky-400/70 shadow-[0_2px_0_0_#071b2d] hover:border-sky-300 transition-all duration-100 active:translate-y-0.5 active:shadow-none shrink-0 cursor-pointer relative group"
-            title={isGoogleSignedIn ? 'Google Drive, Ghi chú Cloud & Google Tasks (Đã kết nối)' : 'Đăng nhập Google (Drive, Ghi chú, Tasks)'}
-          >
-            <svg viewBox="0 0 48 48" className="w-4 h-4 group-hover:scale-110 transition-transform">
-              <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
-              <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
-              <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
-              <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
-            </svg>
-            <span
-              className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full border border-black ${
-                isGoogleSignedIn ? 'bg-emerald-400' : 'bg-gray-500'
-              }`}
-            />
-          </button>
-        )}
-
         {/* 4. 🚮 Nút Thùng rác xóa nhanh mã nguồn */}
         <button
           onClick={onClearCode}
@@ -253,7 +238,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           <Trash2 className="w-4 h-4 text-rose-400 group-hover:text-rose-200 group-hover:scale-110 transition-all drop-shadow-[0_0_6px_rgba(244,63,94,0.8)]" />
         </button>
 
-        {/* 6. ⚙️ Nút Bánh răng Cài đặt */}
+        {/* 5. ⚙️ Nút Bánh răng Cài đặt */}
         <button
           onClick={onOpenSettings}
           className="h-8 min-w-[38px] px-2.5 flex items-center justify-center bg-gradient-to-b from-[#482b13] to-[#331e0c] hover:from-[#613a1a] hover:to-[#452810] text-amber-300 hover:text-white rounded-lg border-2 border-amber-500 shadow-[0_2px_0_0_#211206] hover:border-amber-400 transition-all duration-100 active:translate-y-0.5 active:shadow-none shrink-0 cursor-pointer group"
@@ -261,6 +246,47 @@ export const TopBar: React.FC<TopBarProps> = ({
         >
           <Settings className="w-4 h-4 text-amber-400 group-hover:text-amber-200 group-hover:rotate-45 transition-all drop-shadow-[0_0_6px_rgba(245,158,11,0.8)]" />
         </button>
+
+        {/* 6. 👤 Tài khoản Google & Drive */}
+        {onOpenGoogleAccount && (
+          <button
+            onClick={onOpenGoogleAccount}
+            className={`h-8 min-w-[38px] px-2 flex items-center justify-center rounded-lg border-2 transition-all duration-100 active:translate-y-0.5 active:shadow-none shrink-0 cursor-pointer relative ${
+              googleUser && googleAccessToken
+                ? 'bg-[#102920] hover:bg-[#16382b] border-emerald-400/80 text-emerald-200 shadow-[0_2px_0_0_#064e3b]'
+                : googleUser
+                ? 'bg-[#2a2114] hover:bg-[#3a2d1b] border-amber-400/70 text-amber-200 shadow-[0_2px_0_0_#451a03]'
+                : 'bg-[#191d2b] hover:bg-[#23293d] border-sky-400/60 text-sky-200 shadow-[0_2px_0_0_#0c1a30]'
+            }`}
+            title={
+              googleUser
+                ? `Tài khoản Google: ${googleUser.displayName || googleUser.email || 'Đã đăng nhập'}`
+                : 'Đăng nhập tài khoản Google & Google Drive'
+            }
+          >
+            {googleUser?.photoURL ? (
+              <img
+                src={googleUser.photoURL}
+                alt={googleUser.displayName || 'Google'}
+                className="w-5 h-5 rounded-full object-cover border border-white/30"
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <span className="text-xs font-black tracking-tight">
+                {googleUser ? (googleUser.displayName?.[0] || googleUser.email?.[0] || 'G').toUpperCase() : 'G'}
+              </span>
+            )}
+            <span
+              className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full border border-black ${
+                googleUser && googleAccessToken
+                  ? 'bg-emerald-400'
+                  : googleUser
+                  ? 'bg-amber-400'
+                  : 'bg-sky-400'
+              }`}
+            />
+          </button>
+        )}
 
         {/* 7. ▴ Nút Thu gọn thanh công cụ (Nằm trong thanh trược) */}
         {onToggleCollapseTopBar && (

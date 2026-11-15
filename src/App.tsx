@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Trash2, AlertTriangle, Check } from 'lucide-react';
+import type { User } from 'firebase/auth';
 import { TopBar } from './components/TopBar';
 import { Editor, EditorRef } from './components/Editor';
 import { Terminal } from './components/Terminal';
@@ -10,19 +11,18 @@ import { ColorPickerModal } from './components/ColorPickerModal';
 import { SettingsModal } from './components/SettingsModal';
 import { FileManagerModal } from './components/FileManagerModal';
 import { AiAssistantModal } from './components/AiAssistantModal';
-import { GoogleWorkspaceModal } from './components/GoogleWorkspaceModal';
-import { GoogleSignInButton } from './components/GoogleSignInButton';
+import { ExportApkModal } from './components/ExportApkModal';
 import { DEFAULT_LESSONS } from './constants/defaultLessons';
 import { DEFAULT_MOBILE_KEYS } from './constants/defaultKeys';
 import { THEME_PALETTES, DEFAULT_CUSTOM_COLORS } from './constants/themes';
 import { PythonWebSocketRunner, PyodideRunner, RunCallbacks } from './utils/pythonRunner';
-import { sendGeminiDebug, diagnoseGeminiApi } from './utils/geminiClient';
+import { getApiUrl, isAndroidApkEnvironment } from './utils/apiConfig';
+import { sendAiDebugRequest } from './utils/geminiClient';
 import {
   initAuth,
-  subscribeGoogleAuth,
   googleSignIn,
-  formatGoogleAuthErrorMessage,
-  GoogleAccountProfile,
+  logout as googleLogout,
+  clearCachedAccessToken,
 } from './utils/googleAuth';
 import {
   SyntaxColors,
@@ -88,7 +88,15 @@ export default function App() {
     return Number(localStorage.getItem('pydroid_indent_spaces')) || 4;
   });
   const [engine, setEngine] = useState<ExecutionEngine>(() => {
-    return (localStorage.getItem('pydroid_engine') as ExecutionEngine) || 'cpython';
+    const saved = localStorage.getItem('pydroid_engine') as ExecutionEngine;
+    if (saved && (saved === 'cpython' || saved === 'pyodide')) {
+      return saved;
+    }
+    // On Android APK, default to Pyodide WASM so code execution works 100% offline out of the box!
+    if (isAndroidApkEnvironment()) {
+      return 'pyodide';
+    }
+    return 'cpython';
   });
   const [theme, setTheme] = useState<AppTheme>(() => {
     return (localStorage.getItem('pydroid_theme') as AppTheme) || 'pydroid-dark';
@@ -132,8 +140,14 @@ export default function App() {
 
   // Saved files in storage
   const [savedFiles, setSavedFiles] = useState<SavedFile[]>(() => {
-    const saved = localStorage.getItem('pydroid_saved_files');
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem('pydroid_saved_files');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (_) {}
+    return [];
   });
 
   // Terminal state
@@ -147,27 +161,25 @@ export default function App() {
   const [isStudyOpen, setIsStudyOpen] = useState(false);
   const [isColorPickerOpen, setIsColorPickerOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsFocusSection, setSettingsFocusSection] = useState<'google-account' | null>(null);
   const [isFileManagerOpen, setIsFileManagerOpen] = useState(false);
-  const [isGoogleWorkspaceOpen, setIsGoogleWorkspaceOpen] = useState(false);
   const [isConfirmClearOpen, setIsConfirmClearOpen] = useState(false);
+  const [isExportApkOpen, setIsExportApkOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Google Auth & Workspace state (access token cached in memory only)
-  const [googleProfile, setGoogleProfile] = useState<GoogleAccountProfile | null>(null);
-  const [needsGoogleAuth, setNeedsGoogleAuth] = useState<boolean>(true);
-  const [apkBridgeReturnUrl, setApkBridgeReturnUrl] = useState<string | null>(null);
-  const [apkBridgeError, setApkBridgeError] = useState<string | null>(null);
-  const [isApkBridgeSigningIn, setIsApkBridgeSigningIn] = useState<boolean>(false);
-  const isApkAuthBridgeMode =
-    typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('apk_auth') === '1';
+  // Google Account & Workspace OAuth State (token strictly in-memory)
+  const [googleUser, setGoogleUser] = useState<User | null>(null);
+  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
+  const [needsGoogleAuth, setNeedsGoogleAuth] = useState<boolean>(false);
+  const [isGoogleSigningIn, setIsGoogleSigningIn] = useState<boolean>(false);
+  const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
 
-  const showToast = (msg: string) => {
+  const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage((curr) => (curr === msg ? null : curr));
     }, 2500);
-  };
+  }, []);
 
   // AI Debugger state
   const [isAiDebugOpen, setIsAiDebugOpen] = useState(false);
@@ -176,9 +188,6 @@ export default function App() {
 
   // Fullscreen state
   const [isFullscreen, setIsFullscreen] = useState(false);
-
-  // Dynamic viewport height to adapt immediately to mobile keyboards (Gboard, Samsung Keyboard, Android WebView)
-  const [viewportHeight, setViewportHeight] = useState<number | null>(null);
 
   // Real-time Python Syntax Linter state
   const [isLinterEnabled, setIsLinterEnabled] = useState<boolean>(() => {
@@ -190,6 +199,70 @@ export default function App() {
   const editorRef = useRef<EditorRef>(null);
   const cpythonRunnerRef = useRef<PythonWebSocketRunner | null>(null);
   const pyodideRunnerRef = useRef<PyodideRunner | null>(null);
+
+  // Clean up any legacy manual API key entries from earlier versions
+  useEffect(() => {
+    try {
+      localStorage.removeItem('pydroid_gemini_api_key');
+    } catch (_) {}
+  }, []);
+
+  // Initialize Google OAuth state listener
+  useEffect(() => {
+    const unsubscribe = initAuth(
+      (user, token) => {
+        setGoogleUser(user);
+        setGoogleAccessToken(token);
+        setNeedsGoogleAuth(!token);
+        setGoogleAuthError(null);
+      },
+      (user) => {
+        setGoogleUser(user);
+        setGoogleAccessToken(null);
+        setNeedsGoogleAuth(Boolean(user));
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  const handleGoogleSignIn = useCallback(async () => {
+    setIsGoogleSigningIn(true);
+    setGoogleAuthError(null);
+    try {
+      const res = await googleSignIn();
+      if (res) {
+        setGoogleUser(res.user);
+        setGoogleAccessToken(res.accessToken);
+        setNeedsGoogleAuth(false);
+        showToast(`Đã kết nối Google: ${res.user.displayName || res.user.email || 'Tài khoản Google'}`);
+      }
+    } catch (err: any) {
+      const message = err?.message || 'Không thể đăng nhập bằng Google lúc này.';
+      setGoogleAuthError(message);
+      showToast(message);
+    } finally {
+      setIsGoogleSigningIn(false);
+    }
+  }, [showToast]);
+
+  const handleGoogleSignOut = useCallback(async () => {
+    try {
+      await googleLogout();
+      setGoogleUser(null);
+      setGoogleAccessToken(null);
+      setNeedsGoogleAuth(false);
+      setGoogleAuthError(null);
+      showToast('Đã đăng xuất tài khoản Google.');
+    } catch (err: any) {
+      showToast(err?.message || 'Không thể đăng xuất lúc này.');
+    }
+  }, [showToast]);
+
+  const handleDriveTokenExpired = useCallback(() => {
+    clearCachedAccessToken();
+    setGoogleAccessToken(null);
+    setNeedsGoogleAuth(true);
+  }, []);
 
   // Pre-initialize runners on mount and cleanup on unmount
   useEffect(() => {
@@ -207,38 +280,6 @@ export default function App() {
     return () => {
       cpythonRunnerRef.current?.stop();
       pyodideRunnerRef.current?.stop();
-    };
-  }, []);
-
-  // Initialize Google Firebase Auth listener (in-memory token only)
-  useEffect(() => {
-    const unsubscribeAuth = initAuth(
-      (profile) => {
-        setGoogleProfile(profile);
-        setNeedsGoogleAuth(false);
-      },
-      () => {
-        setNeedsGoogleAuth(true);
-      }
-    );
-    const unsubscribeSub = subscribeGoogleAuth((profile, token) => {
-      setGoogleProfile(profile);
-      setNeedsGoogleAuth(!token);
-    });
-    const handleApkAuthUpdated = (ev: Event) => {
-      const detail = (ev as CustomEvent).detail;
-      if (detail?.profile && detail?.hasToken) {
-        setGoogleProfile(detail.profile);
-        setNeedsGoogleAuth(false);
-        showToast(`✓ Đã đăng nhập Google (${detail.profile.email || detail.profile.displayName})`);
-      }
-    };
-    window.addEventListener('pydroid:google-auth-updated', handleApkAuthUpdated);
-
-    return () => {
-      unsubscribeAuth();
-      unsubscribeSub();
-      window.removeEventListener('pydroid:google-auth-updated', handleApkAuthUpdated);
     };
   }, []);
 
@@ -288,208 +329,6 @@ export default function App() {
     };
     document.addEventListener('fullscreenchange', handleFsChange);
     return () => document.removeEventListener('fullscreenchange', handleFsChange);
-  }, []);
-
-  // 0. Theo dõi visualViewport & window resize để tự động co giãn chiều cao ứng dụng theo bàn phím điện thoại
-  useEffect(() => {
-    const handleViewportChange = () => {
-      if (typeof window === 'undefined') return;
-      const vvHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
-      const nextHeight = Math.round(Math.min(window.innerHeight, vvHeight));
-      if (nextHeight > 0) {
-        setViewportHeight(nextHeight);
-      }
-      if (window.scrollY !== 0 || window.scrollX !== 0) {
-        window.scrollTo(0, 0);
-      }
-    };
-
-    handleViewportChange();
-
-    window.addEventListener('resize', handleViewportChange);
-    if (typeof window !== 'undefined' && window.visualViewport) {
-      window.visualViewport.addEventListener('resize', handleViewportChange);
-      window.visualViewport.addEventListener('scroll', handleViewportChange);
-    }
-
-    return () => {
-      window.removeEventListener('resize', handleViewportChange);
-      if (typeof window !== 'undefined' && window.visualViewport) {
-        window.visualViewport.removeEventListener('resize', handleViewportChange);
-        window.visualViewport.removeEventListener('scroll', handleViewportChange);
-      }
-    };
-  }, []);
-
-  // 1. Tự động chuyển toàn màn hình khi mở trên trình duyệt web (bỏ qua trên bản APK để tránh phá cơ chế cuộn bàn phím Android)
-  useEffect(() => {
-    const isNativeApk =
-      typeof window !== 'undefined' &&
-      Boolean((window as any).Capacitor?.isNativePlatform?.() || (window as any).AndroidFileBridge);
-
-    if (isNativeApk) return;
-
-    const handleFirstTouchFullscreen = () => {
-      if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
-        document.documentElement.requestFullscreen().then(() => {
-          setIsFullscreen(true);
-        }).catch(() => {
-          // Bỏ qua nếu chính sách trình duyệt chặn
-        });
-      }
-    };
-
-    window.addEventListener('touchstart', handleFirstTouchFullscreen, { once: true, passive: true });
-    window.addEventListener('click', handleFirstTouchFullscreen, { once: true, passive: true });
-
-    return () => {
-      window.removeEventListener('touchstart', handleFirstTouchFullscreen);
-      window.removeEventListener('click', handleFirstTouchFullscreen);
-    };
-  }, []);
-
-  // 2. Tự động đồng bộ, lưu trạng thái các thư viện vào localStorage lâu dài và tự động nạp lại khi khởi động ứng dụng
-  useEffect(() => {
-    // A. Danh sách các thư viện cốt lõi luôn được bảo toàn lâu dài trên thiết bị
-    const CORE_PACKAGES = [
-      { name: 'pyfiglet', version: '1.0.4' },
-      { name: 'colorama', version: '0.4.6' },
-      { name: 'certifi', version: '2026.10.23' },
-      { name: 'charset-normalizer', version: '3.5.2' },
-    ];
-
-    // B. Đọc và hợp nhất ngay lập tức từ localStorage để đảm bảo dữ liệu không bị mất khi offline/APK
-    const syncAndSavePackages = (extraPackages: Array<{ name: string; version?: string }> = []) => {
-      const packageMap = new Map<string, { name: string; version: string }>();
-
-      // 1. Nạp gói cốt lõi
-      for (const p of CORE_PACKAGES) {
-        packageMap.set(p.name.toLowerCase(), { name: p.name, version: p.version || '1.0.0' });
-      }
-
-      // 2. Nạp toàn bộ các gói đã từng lưu trong localStorage
-      try {
-        const saved = localStorage.getItem('pydroid3_installed_packages');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) {
-            for (const p of parsed) {
-              if (p && p.name) {
-                packageMap.set(p.name.toLowerCase(), {
-                  name: p.name,
-                  version: p.version || 'installed',
-                });
-              }
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('Lỗi đọc pydroid3_installed_packages từ localStorage:', err);
-      }
-
-      // 3. Hợp nhất thêm các gói từ server hoặc sự kiện mới
-      for (const p of extraPackages) {
-        if (p && p.name) {
-          packageMap.set(p.name.toLowerCase(), {
-            name: p.name,
-            version: p.version || 'installed',
-          });
-        }
-      }
-
-      const consolidatedList = Array.from(packageMap.values());
-
-      // 4. Lưu vĩnh viễn vào localStorage
-      try {
-        localStorage.setItem('pydroid3_installed_packages', JSON.stringify(consolidatedList));
-      } catch (saveErr) {
-        console.warn('Lỗi lưu pydroid3_installed_packages vào localStorage:', saveErr);
-      }
-
-      return consolidatedList;
-    };
-
-    // Thực hiện lưu và hợp nhất ngay khi mở app
-    const initialList = syncAndSavePackages();
-    const packageNamesToPreload = initialList.map((p) => p.name);
-
-    // C. Khởi động an toàn môi trường Pyodide khi khởi động ứng dụng
-    if (pyodideRunnerRef.current) {
-      pyodideRunnerRef.current.preloadInstalledPackages().catch(() => {});
-    }
-
-    // D. Đồng bộ từ backend /api/python/packages (nếu có kết nối máy chủ)
-    fetch('/api/python/packages')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data && data.packages && Array.isArray(data.packages)) {
-          syncAndSavePackages(data.packages);
-        }
-      })
-      .catch(() => {
-        // Hoạt động offline/APK hoàn toàn trơn tru với dữ liệu localStorage đã lưu
-      });
-
-    // E. Lắng nghe sự kiện cập nhật thư viện từ SettingsModal để lập tức lưu
-    const handlePackagesUpdated = (event: Event) => {
-      const customEvent = event as CustomEvent;
-      const detailPackages = Array.isArray(customEvent.detail) ? customEvent.detail : [];
-      syncAndSavePackages(detailPackages);
-    };
-
-    window.addEventListener('pydroid:packages-updated', handlePackagesUpdated);
-
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'pydroid3_installed_packages') {
-        syncAndSavePackages();
-      }
-    };
-    window.addEventListener('storage', handleStorageChange);
-
-    // F. Lắng nghe ghi log vào Terminal từ các công cụ chẩn đoán (Diagnostic Tools)
-    const handleTerminalLog = (event: Event) => {
-      const customEvent = event as CustomEvent<{
-        type?: 'stdout' | 'stderr' | 'system' | 'stdin';
-        text?: string;
-        clear?: boolean;
-        switchTab?: boolean;
-      }>;
-      if (!customEvent.detail) return;
-      if (customEvent.detail.clear) {
-        setTerminalEntries([]);
-      }
-      if (customEvent.detail.text !== undefined) {
-        const entryText = customEvent.detail.text;
-        const entryType = customEvent.detail.type || 'stdout';
-        setTerminalEntries((prev) => [
-          ...prev,
-          {
-            type: entryType,
-            text: entryText,
-          },
-        ]);
-      }
-      if (customEvent.detail.switchTab !== false) {
-        setActiveTab('terminal');
-      }
-    };
-    window.addEventListener('pydroid:terminal-log', handleTerminalLog);
-
-    // G. Lắng nghe yêu cầu kích hoạt chẩn đoán Gemini API từ bất kỳ đâu trong app
-    const handleRunDiagnostic = () => {
-      setActiveTab('terminal');
-      diagnoseGeminiApi().catch((err) => {
-        console.error('Lỗi khi chạy chẩn đoán Gemini:', err);
-      });
-    };
-    window.addEventListener('pydroid:run-gemini-diagnostic', handleRunDiagnostic);
-
-    return () => {
-      window.removeEventListener('pydroid:packages-updated', handlePackagesUpdated);
-      window.removeEventListener('storage', handleStorageChange);
-      window.removeEventListener('pydroid:terminal-log', handleTerminalLog);
-      window.removeEventListener('pydroid:run-gemini-diagnostic', handleRunDiagnostic);
-    };
   }, []);
 
   // Quick 1-click toggle between CPython Native and Pyodide WASM
@@ -580,28 +419,14 @@ export default function App() {
           callbacks,
           async (runtimeReason?: string) => {
             // Automatic seamless fallback to CPython Native if runtime error/download failure occurs
-            const isPackageFallback = runtimeReason && (
-              runtimeReason.includes('ModuleNotFoundError') ||
-              runtimeReason.includes('No module named') ||
-              runtimeReason.includes('Failed to fetch') ||
-              runtimeReason.includes('loading') ||
-              runtimeReason.includes('Không thể tải gói')
-            );
+            const isModuleFallback = runtimeReason && (runtimeReason.includes('ModuleNotFoundError') || runtimeReason.includes('No module named'));
             console.warn('[Engine Validation] Pyodide runtime fallback triggered:', runtimeReason);
-            if (!isPackageFallback) {
+            if (!isModuleFallback) {
               setTerminalEntries((prev) => [
                 ...prev,
                 {
                   type: 'stderr',
                   text: `⚠️ Sự cố nạp động cơ Pyodide WASM${runtimeReason ? `: ${runtimeReason}` : ''}`,
-                },
-              ]);
-            } else {
-              setTerminalEntries((prev) => [
-                ...prev,
-                {
-                  type: 'system',
-                  text: '🔄 Đang tự động chuyển tiếp thực thi qua [CPython Native]...',
                 },
               ]);
             }
@@ -636,8 +461,25 @@ export default function App() {
         await cpythonRunner.run(codeToRun, stdinData, callbacks);
       }
     } else {
-      // Direct CPython Native execution path
-      await cpythonRunner.run(codeToRun, stdinData, callbacks);
+      // Direct CPython Native execution path with automatic Pyodide WASM fallback if server is unreachable
+      try {
+        await cpythonRunner.run(codeToRun, stdinData, callbacks);
+      } catch (cpythonErr: any) {
+        console.warn('[Engine Fallback] CPython error, falling back to Pyodide WASM:', cpythonErr);
+        setTerminalEntries((prev) => [
+          ...prev,
+          {
+            type: 'stderr',
+            text: `⚠️ CPython không phản hồi (${cpythonErr?.message || 'Không thể kết nối máy chủ'}).`,
+          },
+          {
+            type: 'system',
+            text: '🔄 Đang tự động chuyển sang bộ nhân [Pyodide WASM] thực thi trực tiếp trên thiết bị (Offline 100%)...',
+          },
+        ]);
+        showToast('🔄 Chuyển sang Pyodide WASM chạy trực tiếp trên thiết bị!');
+        await pyodideRunner.run(codeToRun, stdinData, callbacks);
+      }
     }
   };
 
@@ -744,14 +586,14 @@ export default function App() {
     setAiDebugResult(null);
 
     try {
-      const debugData = await sendGeminiDebug(code, errorText);
-      setAiDebugResult(debugData);
+      const data = await sendAiDebugRequest(code, errorText);
+      setAiDebugResult(data);
     } catch (err: any) {
       setAiDebugResult({
         errorType: 'AI Error',
         vietnameseSummary: 'Không thể phân tích lỗi lúc này.',
         rootCause: err.message || 'Lỗi kết nối máy chủ Gemini AI.',
-        tips: ['Kiểm tra kết nối mạng và thử chạy lại mã.'],
+        tips: ['Kiểm tra kết nối mạng hoặc trạng thái máy chủ Gemini AI trong mục Cài đặt.'],
         fixedCode: code,
         diffExplanation: 'Không có thay đổi.',
       });
@@ -880,85 +722,8 @@ export default function App() {
     handleTriggerAiDebug(errorText, true);
   };
 
-  if (isApkAuthBridgeMode) {
-    const handleBridgeSignIn = async () => {
-      setIsApkBridgeSigningIn(true);
-      setApkBridgeError(null);
-      try {
-        const res = await googleSignIn({ forcePopup: true });
-        if (res?.accessToken) {
-          const fragment = new URLSearchParams({
-            access_token: res.accessToken,
-            uid: res.profile.uid,
-            name: res.profile.displayName,
-            email: res.profile.email,
-            photo: res.profile.photoURL,
-          }).toString();
-          const deepLink = `com.pydroid3.web://auth-callback#${fragment}`;
-          setApkBridgeReturnUrl(deepLink);
-          window.location.href = deepLink;
-        }
-      } catch (err: any) {
-        setApkBridgeError(formatGoogleAuthErrorMessage(err));
-      } finally {
-        setIsApkBridgeSigningIn(false);
-      }
-    };
-
-    return (
-      <div className="min-h-screen w-screen bg-[#13131c] text-gray-100 flex items-center justify-center p-5">
-        <div className="bg-[#1b1b29] border border-[#35344f] rounded-2xl max-w-sm w-full p-6 text-center space-y-4 shadow-2xl">
-          <h1 className="text-base font-bold text-amber-300">
-            Đăng nhập Google cho Pydroid 3 APK
-          </h1>
-          <p className="text-xs text-gray-300 leading-relaxed">
-            Nhấn nút bên dưới để xác thực tài khoản Google của bạn trên trình duyệt an toàn, sau đó quay lại ứng dụng APK để dùng Google Drive, Ghi chú Cloud và Google Tasks.
-          </p>
-
-          <div className="flex justify-center">
-            <GoogleSignInButton
-              onClick={handleBridgeSignIn}
-              disabled={isApkBridgeSigningIn}
-              label={isApkBridgeSigningIn ? 'Đang xác thực...' : 'Sign in with Google'}
-            />
-          </div>
-
-          {apkBridgeError && (
-            <div className="p-2.5 rounded-xl bg-rose-950/60 border border-rose-500/40 text-rose-200 text-xs text-left">
-              {apkBridgeError}
-            </div>
-          )}
-
-          {apkBridgeReturnUrl && (
-            <div className="space-y-2 pt-2 border-t border-[#2d2c42]">
-              <p className="text-xs text-emerald-300 font-semibold">
-                Xác thực thành công! Nếu ứng dụng chưa tự mở lại, hãy bấm nút dưới đây:
-              </p>
-              <a
-                href={apkBridgeReturnUrl}
-                className="inline-block w-full py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold rounded-xl text-xs"
-              >
-                Quay lại Pydroid 3 APK
-              </a>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div
-      className="flex flex-col w-screen overflow-hidden bg-[#181822] text-gray-100 font-sans select-none"
-      style={{
-        height: viewportHeight ? `${viewportHeight}px` : '100dvh',
-        maxHeight: viewportHeight ? `${viewportHeight}px` : '100dvh',
-        paddingTop: 'env(safe-area-inset-top, 0px)',
-        paddingBottom: 'env(safe-area-inset-bottom, 0px)',
-        paddingLeft: 'env(safe-area-inset-left, 0px)',
-        paddingRight: 'env(safe-area-inset-right, 0px)',
-      }}
-    >
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#181822] text-gray-100 font-sans select-none">
       {/* 🎛️ Streamlined Top Bar */}
       <TopBar
         activeTab={activeTab}
@@ -976,17 +741,22 @@ export default function App() {
         onToggleFullscreen={handleToggleFullscreen}
         onOpenAiAssistant={() => setIsAiAssistantOpen(true)}
         onOpenAutoFix={handleOpenAutoFix}
-        onOpenGoogleWorkspace={() => setIsGoogleWorkspaceOpen(true)}
-        isGoogleSignedIn={!needsGoogleAuth && Boolean(googleProfile)}
+        onOpenExportApk={() => setIsExportApkOpen(true)}
         engine={engine}
         onToggleEngine={handleToggleEngine}
+        googleUser={googleUser}
+        googleAccessToken={googleAccessToken}
+        onOpenGoogleAccount={() => {
+          setSettingsFocusSection('google-account');
+          setIsSettingsOpen(true);
+        }}
       />
 
       {/* Main Workspace (Editor or Terminal) */}
-      <main className="flex-1 min-h-0 relative w-full overflow-hidden flex flex-col">
+      <main className="flex-1 relative w-full overflow-hidden flex flex-col">
         {/* Editor Screen */}
         <div
-          className={`flex-1 min-h-0 w-full h-full flex flex-col overflow-hidden ${
+          className={`flex-1 w-full h-full flex flex-col overflow-hidden ${
             activeTab === 'editor' ? 'flex' : 'hidden'
           }`}
         >
@@ -1005,7 +775,7 @@ export default function App() {
 
         {/* Terminal Screen */}
         <div
-          className={`flex-1 min-h-0 w-full h-full flex flex-col overflow-hidden ${
+          className={`flex-1 w-full h-full flex flex-col overflow-hidden ${
             activeTab === 'terminal' ? 'flex' : 'hidden'
           }`}
         >
@@ -1116,7 +886,10 @@ export default function App() {
       {/* 4. Settings Modal */}
       <SettingsModal
         isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
+        onClose={() => {
+          setIsSettingsOpen(false);
+          setSettingsFocusSection(null);
+        }}
         fontSize={fontSize}
         setFontSize={setFontSize}
         fontFamily={fontFamily}
@@ -1126,10 +899,21 @@ export default function App() {
         engine={engine}
         setEngine={setEngine}
         onOpenColorPicker={() => setIsColorPickerOpen(true)}
+        onOpenExportApk={() => setIsExportApkOpen(true)}
         customColors={customColors}
-        googleProfile={googleProfile}
+        focusSection={settingsFocusSection}
+        googleUser={googleUser}
+        googleAccessToken={googleAccessToken}
         needsGoogleAuth={needsGoogleAuth}
-        onOpenGoogleWorkspace={() => setIsGoogleWorkspaceOpen(true)}
+        isGoogleSigningIn={isGoogleSigningIn}
+        googleAuthError={googleAuthError}
+        onGoogleSignIn={handleGoogleSignIn}
+        onGoogleSignOut={handleGoogleSignOut}
+        onOpenFileManager={() => {
+          setIsSettingsOpen(false);
+          setSettingsFocusSection(null);
+          setIsFileManagerOpen(true);
+        }}
       />
 
       {/* 5. File Manager Modal */}
@@ -1145,49 +929,14 @@ export default function App() {
         savedFiles={savedFiles}
         onDeleteFile={handleDeleteFile}
         onUploadFile={handleUploadFile}
-        onOpenGoogleWorkspace={() => setIsGoogleWorkspaceOpen(true)}
-        onApplySnippet={(snippetCode) => {
-          setCode(snippetCode);
-          setActiveTab('editor');
-          showToast('Đã nạp đoạn mã từ Kho Vault vào Editor!');
-        }}
-        onInsertSnippet={(snippetCode) => {
-          if (editorRef.current?.insertTextAtCursor) {
-            editorRef.current.insertTextAtCursor(snippetCode);
-          } else {
-            setCode((prev) => (prev ? prev + '\n\n' + snippetCode : snippetCode));
-          }
-          setActiveTab('editor');
-          showToast('Đã chèn đoạn mã vào vị trí con trỏ!');
-        }}
-      />
-
-      {/* 5.5 Google Workspace Modal (Drive, Cloud Notes, Google Tasks) */}
-      <GoogleWorkspaceModal
-        isOpen={isGoogleWorkspaceOpen}
-        onClose={() => setIsGoogleWorkspaceOpen(false)}
-        profile={googleProfile}
-        needsAuth={needsGoogleAuth}
-        currentFileName={fileName}
-        currentCode={code}
-        onLoadCodeToEditor={(loadedName, loadedCode) => {
-          setFileName(loadedName);
-          setCode(loadedCode);
-          setActiveTab('editor');
-          showToast(`Đã mở "${loadedName}" từ Google Drive!`);
-        }}
-        onInsertSnippetToEditor={(snippetCode) => {
-          if (editorRef.current?.insertTextAtCursor) {
-            editorRef.current.insertTextAtCursor(snippetCode);
-          } else {
-            setCode((prev) => (prev ? prev + '\n\n' + snippetCode : snippetCode));
-          }
-          setActiveTab('editor');
-          showToast('Đã chèn nội dung từ Ghi chú Cloud vào Editor!');
-        }}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        onOpenAiAssistant={() => setIsAiAssistantOpen(true)}
-        onOpenAutoFix={handleOpenAutoFix}
+        googleUser={googleUser}
+        googleAccessToken={googleAccessToken}
+        needsGoogleAuth={needsGoogleAuth}
+        isGoogleSigningIn={isGoogleSigningIn}
+        googleAuthError={googleAuthError}
+        onGoogleSignIn={handleGoogleSignIn}
+        onDriveTokenExpired={handleDriveTokenExpired}
+        onShowToast={showToast}
       />
 
       {/* 6. Python AI Coding Assistant Chat Modal */}
@@ -1207,6 +956,17 @@ export default function App() {
           setActiveTab('editor');
           showToast('Đã áp dụng mã từ Trợ lý AI vào Editor!');
         }}
+        googleUser={googleUser}
+        onOpenSettings={() => {
+          setSettingsFocusSection('google-account');
+          setIsSettingsOpen(true);
+        }}
+      />
+
+      {/* 7. Export Android APK & Source Code Modal */}
+      <ExportApkModal
+        isOpen={isExportApkOpen}
+        onClose={() => setIsExportApkOpen(false)}
       />
 
       {/* 7. In-App Confirmation Modal: Xóa nhanh mã nguồn */}

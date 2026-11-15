@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Settings,
   X,
@@ -18,35 +18,35 @@ import {
   Palette,
   ChevronDown,
   ChevronUp,
-  Key,
-  Eye,
-  EyeOff,
-  ExternalLink,
-  FolderGit2,
-  FolderArchive,
-  FileCode,
-  Folder,
-  UploadCloud,
-  Rocket,
   Smartphone,
-  Server,
+  Globe,
+  Wifi,
+  RotateCcw,
+  Check,
+  Cloud,
   LogOut,
-  HardDrive,
+  FolderOpen,
+  Layers as ServicesIcon,
+  ExternalLink,
+  Copy,
 } from 'lucide-react';
+import type { User as FirebaseUser } from 'firebase/auth';
 import { ExecutionEngine, SyntaxColors } from '../types';
 import { DEFAULT_CUSTOM_COLORS } from '../constants/themes';
-import { testBrowserWebAssemblySupport } from '../utils/pythonRunner';
-import { testGeminiApiKey } from '../utils/geminiClient';
-import pydroidAppIcon from '../assets/images/pydroid_app_icon_1794475208432.jpg';
 import {
-  GoogleAccountProfile,
-  googleSignIn,
-  logout,
-  getRenderBackendUrl,
-  setRenderBackendUrl,
-  DEFAULT_RENDER_BACKEND_URL,
-  formatGoogleAuthErrorMessage,
-} from '../utils/googleAuth';
+  testBrowserWebAssemblySupport,
+  installPackageInPyodide,
+  uninstallPackageInPyodide,
+} from '../utils/pythonRunner';
+import {
+  getApiUrl,
+  getApiBaseUrl,
+  setApiBaseUrl,
+  testApiGatewayConnection,
+  testServerAiStatus,
+  isAndroidApkEnvironment,
+  DEFAULT_CLOUD_API_URL,
+} from '../utils/apiConfig';
 import { GoogleSignInButton } from './GoogleSignInButton';
 
 interface InstalledPackage {
@@ -72,10 +72,17 @@ interface SettingsModalProps {
   engine: ExecutionEngine;
   setEngine: (engine: ExecutionEngine) => void;
   onOpenColorPicker?: () => void;
+  onOpenExportApk?: () => void;
   customColors?: SyntaxColors;
-  googleProfile?: GoogleAccountProfile | null;
+  focusSection?: 'google-account' | null;
+  googleUser?: FirebaseUser | null;
+  googleAccessToken?: string | null;
   needsGoogleAuth?: boolean;
-  onOpenGoogleWorkspace?: () => void;
+  isGoogleSigningIn?: boolean;
+  googleAuthError?: string | null;
+  onGoogleSignIn?: () => void;
+  onGoogleSignOut?: () => void;
+  onOpenFileManager?: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -90,10 +97,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   engine,
   setEngine,
   onOpenColorPicker,
+  onOpenExportApk,
   customColors,
-  googleProfile,
+  focusSection,
+  googleUser,
+  googleAccessToken,
   needsGoogleAuth,
-  onOpenGoogleWorkspace,
+  isGoogleSigningIn,
+  googleAuthError,
+  onGoogleSignIn,
+  onGoogleSignOut,
+  onOpenFileManager,
 }) => {
   const [versionInfo, setVersionInfo] = useState<{
     cpythonVersion: string;
@@ -112,34 +126,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Package Manager States
   const [isInstalledDropdownOpen, setIsInstalledDropdownOpen] = useState<boolean>(false);
   const [pkgTab, setPkgTab] = useState<'installed' | 'search'>('installed');
-  
-  // Always include preinstalled libraries so they are never lost across sessions
-  const DEFAULT_PREINSTALLED_PACKAGES: InstalledPackage[] = [
-    { name: 'pyfiglet', version: '1.0.4' },
-    { name: 'colorama', version: '0.4.6' },
-    { name: 'certifi', version: '2026.10.23' },
-    { name: 'charset-normalizer', version: '3.5.2' },
-  ];
-
   const [installedPackages, setInstalledPackages] = useState<InstalledPackage[]>(() => {
     try {
       const saved = localStorage.getItem('pydroid3_installed_packages');
-      const map = new Map<string, InstalledPackage>();
-      for (const p of DEFAULT_PREINSTALLED_PACKAGES) {
-        map.set(p.name.toLowerCase(), p);
-      }
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          for (const p of parsed) {
-            if (p && p.name) map.set(p.name.toLowerCase(), p);
-          }
-        }
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
-      return Array.from(map.values());
-    } catch (_) {
-      return DEFAULT_PREINSTALLED_PACKAGES;
-    }
+    } catch (_) {}
+    return [];
   });
   const [isLoadingPackages, setIsLoadingPackages] = useState<boolean>(false);
   const [installedFilter, setInstalledFilter] = useState<string>('');
@@ -150,191 +145,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [customPkgInput, setCustomPkgInput] = useState<string>('');
 
-  // Google Account & Render Cloud Backend (for APK)
-  const [renderUrlInput, setRenderUrlInput] = useState<string>(() => getRenderBackendUrl());
-  const [renderUrlNotice, setRenderUrlNotice] = useState<string | null>(null);
-  const [isGoogleLoggingIn, setIsGoogleLoggingIn] = useState<boolean>(false);
-  const [googleAuthErr, setGoogleAuthErr] = useState<string | null>(null);
-
-  const handleSaveRenderUrl = () => {
-    const saved = setRenderBackendUrl(renderUrlInput || DEFAULT_RENDER_BACKEND_URL);
-    setRenderUrlInput(saved);
-    setRenderUrlNotice(`Đã lưu máy chủ Cloud: ${saved}`);
-    setTimeout(() => setRenderUrlNotice(null), 3500);
-  };
-
-  const handleGoogleLoginClick = async () => {
-    setIsGoogleLoggingIn(true);
-    setGoogleAuthErr(null);
-    try {
-      await googleSignIn();
-    } catch (err: any) {
-      setGoogleAuthErr(formatGoogleAuthErrorMessage(err));
-    } finally {
-      setIsGoogleLoggingIn(false);
-    }
-  };
-
-  // Server-side Gemini AI connectivity test state
-  const [isTestingApiKey, setIsTestingApiKey] = useState<boolean>(false);
-  const [apiKeyStatus, setApiKeyStatus] = useState<{ ok?: boolean; message?: string } | null>(null);
-
-  const handleTestApiKey = async () => {
-    setIsTestingApiKey(true);
-    setApiKeyStatus(null);
-    try {
-      const res = await testGeminiApiKey();
-      setApiKeyStatus({ ok: res.ok, message: res.message });
-    } catch (err: any) {
-      setApiKeyStatus({ ok: false, message: `Lỗi: ${err.message}` });
-    } finally {
-      setIsTestingApiKey(false);
-    }
-  };
-
-  // ZIP Source Export for GitHub & APK
-  const [isDownloadingZip, setIsDownloadingZip] = useState(false);
-  const [showGitHubFileList, setShowGitHubFileList] = useState(false);
-  const [zipDownloadStatus, setZipDownloadStatus] = useState<{ ok: boolean; message: string } | null>(null);
-
-  const handleDownloadSourceZip = async () => {
-    setIsDownloadingZip(true);
-    setZipDownloadStatus(null);
-
-    try {
-      // Use in-memory fetch with credentials to avoid Cloud Run iframe cookie-check redirect
-      const response = await fetch('/api/export-project-zip', {
-        credentials: 'include',
-      });
-
-      if (!response.ok) {
-        throw new Error(`Máy chủ báo lỗi HTTP ${response.status}`);
-      }
-
-      const blob = await response.blob();
-
-      // Check magic bytes: standard ZIP header starts with 'PK' (0x50, 0x4B)
-      const headerBuffer = await blob.slice(0, 4).arrayBuffer();
-      const headerBytes = new Uint8Array(headerBuffer);
-      const isZip = headerBytes[0] === 0x50 && headerBytes[1] === 0x4B;
-
-      if (!isZip) {
-        const text = await blob.text();
-        if (text.includes('Cookie check') || text.includes('<!doctype html>')) {
-          throw new Error('Trình duyệt chặn cookie xác thực trong iframe. Vui lòng mở trang web ở tab mới hoặc bấm nút mở cửa sổ bên dưới.');
-        }
-        throw new Error('Dữ liệu nhận về không phải file ZIP hợp lệ.');
-      }
-
-      // Trigger download from local blob URL directly in memory
-      const objectUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = objectUrl;
-      link.download = 'pydroid3-android-source.zip';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(objectUrl);
-
-      const sizeMb = (blob.size / (1024 * 1024)).toFixed(1);
-      setZipDownloadStatus({ ok: true, message: `Đã tải về thành công file ZIP chuẩn (${sizeMb} MB)! Bạn có thể giải nén bình thường.` });
-    } catch (err: any) {
-      console.error('Download error:', err);
-      setZipDownloadStatus({ ok: false, message: `Lỗi: ${err.message || 'Không thể tải file'}` });
-    } finally {
-      setIsDownloadingZip(false);
-    }
-  };
-
-  // 1-Click GitHub Push for Mobile Phones without a PC
-  const [ghToken, setGhToken] = useState<string>(() => {
-    try {
-      return localStorage.getItem('pydroid3_gh_token') || '';
-    } catch (_) {
-      return '';
-    }
-  });
-  const [showGhToken, setShowGhToken] = useState<boolean>(false);
-  const [ghRepoName, setGhRepoName] = useState<string>('pydroid3-android');
-  const [isPushingToGh, setIsPushingToGh] = useState<boolean>(false);
-  const [ghPushResult, setGhPushResult] = useState<{
-    ok: boolean;
-    message: string;
-    repoUrl?: string;
-    actionsUrl?: string;
-  } | null>(null);
-
-  const handlePushToGitHub = async () => {
-    let cleanToken = ghToken.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
-    cleanToken = cleanToken.replace(/^['"]+|['"]+$/g, '').trim();
-    cleanToken = cleanToken.replace(/^(authorization:\s*)?(bearer|token)\s+/i, '').trim();
-
-    if (!cleanToken) {
-      setGhPushResult({
-        ok: false,
-        message: 'Vui lòng dán mã GitHub Personal Access Token của bạn (bắt đầu bằng ghp_... hoặc github_pat_...). Bấm vào "Lấy Token" ở trên để tạo mã có sẵn quyền.',
-      });
-      return;
-    }
-
-    if (cleanToken.length < 20 || /\s/.test(cleanToken)) {
-      setGhPushResult({
-        ok: false,
-        message: 'Mã token chưa đúng định dạng. Token GitHub chuẩn bắt đầu bằng ghp_... hoặc github_pat_... và không chứa khoảng trắng. Vui lòng bấm liên kết "Lấy Token" bên trên.',
-      });
-      return;
-    }
-
-    setIsPushingToGh(true);
-    setGhPushResult(null);
-
-    try {
-      const res = await fetch('/api/github/push-repo', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          token: cleanToken,
-          repoName: ghRepoName.trim() || 'pydroid3-android',
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (res.status === 401) {
-          try {
-            if (localStorage.getItem('pydroid3_gh_token') === cleanToken) {
-              localStorage.removeItem('pydroid3_gh_token');
-            }
-          } catch (_) {}
-        }
-        setGhPushResult({
-          ok: false,
-          message: data.error || `Không thể đẩy mã lên GitHub (HTTP ${res.status}). Vui lòng kiểm tra lại token.`,
-        });
-        return;
-      }
-
-      // Chỉ lưu token khi GitHub đã xác thực thành công
-      try {
-        localStorage.setItem('pydroid3_gh_token', cleanToken);
-      } catch (_) {}
-
-      setGhPushResult({
-        ok: true,
-        message: data.message,
-        repoUrl: data.repoUrl,
-        actionsUrl: data.actionsUrl,
-      });
-    } catch (err: any) {
-      setGhPushResult({
-        ok: false,
-        message: err?.message || 'Lỗi kết nối mạng khi gửi yêu cầu lên GitHub. Vui lòng thử lại.',
-      });
-    } finally {
-      setIsPushingToGh(false);
-    }
-  };
-
   // Execution / Terminal Output States
   const [activeActionPkg, setActiveActionPkg] = useState<string | null>(null);
   const [actionType, setActionType] = useState<'install' | 'upgrade' | 'uninstall' | null>(null);
@@ -342,27 +152,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [actionStatus, setActionStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
   const [showLogTerminal, setShowLogTerminal] = useState<boolean>(false);
 
-  // Fetch installed packages from server and sync with persistent storage
+  // API Gateway / Cloud Server States for Android APK and Web
+  const [apiGatewayUrl, setApiGatewayUrl] = useState<string>(() => getApiBaseUrl());
+  const [isTestingApi, setIsTestingApi] = useState<boolean>(false);
+  const [apiTestResult, setApiTestResult] = useState<{ ok: boolean; latencyMs: number; message: string } | null>(null);
+  const [apiSaveSuccess, setApiSaveSuccess] = useState<boolean>(false);
+
+
+  // Server Gemini AI Status States
+  const [isTestingAiServer, setIsTestingAiServer] = useState<boolean>(false);
+  const [aiServerStatus, setAiServerStatus] = useState<{
+    ok: boolean;
+    model: string;
+    message: string;
+    diagnostic?: {
+      httpStatus?: number | null;
+      keyPresent?: boolean;
+      keySource?: string;
+      geminiKeyLen?: number;
+      geminiKeyStartsAIza?: boolean;
+      rawError?: string;
+    };
+  } | null>(null);
+  const [pendingUninstallPkg, setPendingUninstallPkg] = useState<string | null>(null);
+  const googleSectionRef = useRef<HTMLDivElement>(null);
+
+  // Fetch installed packages
   const fetchInstalledPackages = async () => {
     setIsLoadingPackages(true);
     try {
-      const res = await fetch('/api/python/packages');
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.packages && Array.isArray(data.packages)) {
-          const map = new Map<string, InstalledPackage>();
-          for (const p of DEFAULT_PREINSTALLED_PACKAGES) {
-            map.set(p.name.toLowerCase(), p);
-          }
-          for (const p of data.packages) {
-            if (p && p.name) map.set(p.name.toLowerCase(), p);
-          }
-          const merged = Array.from(map.values());
-          setInstalledPackages(merged);
-          try {
-            localStorage.setItem('pydroid3_installed_packages', JSON.stringify(merged));
-          } catch (_) {}
-        }
+      const res = await fetch(getApiUrl('/api/python/packages'));
+      const data = await res.json();
+      if (data && data.packages && Array.isArray(data.packages)) {
+        setInstalledPackages(data.packages);
+        try {
+          localStorage.setItem('pydroid3_installed_packages', JSON.stringify(data.packages));
+        } catch (_) {}
       }
     } catch (e) {
       console.warn('Failed to load packages:', e);
@@ -375,7 +200,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleSearchPackages = async (q: string) => {
     setIsSearching(true);
     try {
-      const res = await fetch(`/api/python/packages/search?q=${encodeURIComponent(q)}`);
+      const res = await fetch(getApiUrl(`/api/python/packages/search?q=${encodeURIComponent(q)}`));
       const data = await res.json();
       if (data && data.packages) {
         setSearchResults(data.packages);
@@ -387,7 +212,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  // Trigger Install or Upgrade with guaranteed offline/APK & online persistence
+  // Trigger Install or Upgrade with Dual-Engine (Server CPython + Android On-Device Pyodide WASM)
   const handleInstallPackage = async (pkgName: string, isUpgrade: boolean = false) => {
     if (!pkgName.trim()) return;
     const clean = pkgName.trim();
@@ -395,66 +220,80 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setActiveActionPkg(clean);
     setActionType(isUpgrade ? 'upgrade' : 'install');
     setActionStatus('running');
-    setActionOutput(`📦 [pip install${isUpgrade ? ' --upgrade' : ''} ${clean}]\nĐang cài đặt thư viện...\n`);
     setShowLogTerminal(true);
 
-    let installMsg = '';
+    let serverSucceeded = false;
+    let serverOutput = '';
 
-    // 1. Install via backend if running on web/dev server
+    // Step 1: Attempt Cloud Server installation (CPython Native)
+    setActionOutput(`📦 [pip install${isUpgrade ? ' --upgrade' : ''} ${clean}]\n1. Đang kết nối máy chủ CPython...\n`);
     try {
-      const res = await fetch('/api/python/packages/install', {
+      const res = await fetch(getApiUrl('/api/python/packages/install'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: clean, upgrade: isUpgrade }),
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.success) {
-          installMsg = data.output || `Hoàn tất cài đặt ${clean}!`;
+        if (data && data.success) {
+          serverSucceeded = true;
+          serverOutput = data.output || `Đã cài đặt ${clean} trên máy chủ CPython!`;
         }
       }
     } catch (_) {
-      // Backend not running (standalone APK)
+      // Server is offline, unreachable, or app running in isolated APK
     }
 
-    // 2. Also load via micropip in Pyodide WASM
-    if (typeof window !== 'undefined' && (window as any).pyodideInstance) {
-      try {
-        const py = (window as any).pyodideInstance;
-        await py.loadPackage('micropip');
-        const micropip = py.pyimport('micropip');
-        await micropip.install(clean);
-        installMsg += `\n✓ Đã nạp thành công vào động cơ Pyodide trên máy!`;
-      } catch (wasmErr: any) {
-        console.warn('WASM micropip notice:', wasmErr);
+    // Step 2: Install directly on-device into Pyodide WASM & micropip
+    setActionOutput((prev) => prev + `2. Đang nạp gói [${clean}] vào bộ nhân Pyodide trên thiết bị Android (WASM & Micropip)...\n`);
+    const pyodideResult = await installPackageInPyodide(clean);
+
+    if (serverSucceeded || pyodideResult.success) {
+      setActionStatus('success');
+      const finalVersion = pyodideResult.version || 'đã cài đặt';
+
+      const summaryLogs = [
+        serverSucceeded ? `⚡ [Máy chủ CPython]: ${serverOutput}` : '⚡ [Máy chủ CPython]: Ngoại tuyến (Đã bỏ qua)',
+        pyodideResult.success ? `📱 [Thiết bị Android]: ${pyodideResult.output}` : `📱 [Thiết bị Android]: ${pyodideResult.output}`,
+        `\n🎉 Thư viện [${clean}] (${finalVersion}) đã sẵn sàng hoạt động trong ứng dụng!`
+      ].join('\n');
+
+      setActionOutput(summaryLogs);
+      setCustomPkgInput('');
+
+      // Update installedPackages state and persistent storage
+      const newPkg: InstalledPackage = { name: clean, version: finalVersion };
+      setInstalledPackages((prev) => {
+        const filtered = prev.filter((p) => p.name.toLowerCase() !== clean.toLowerCase());
+        const updated = [newPkg, ...filtered];
+        try {
+          localStorage.setItem('pydroid3_installed_packages', JSON.stringify(updated));
+        } catch (_) {}
+        return updated;
+      });
+
+      // Synchronize with server if available
+      if (serverSucceeded) {
+        fetchInstalledPackages().catch(() => {});
       }
+    } else {
+      setActionStatus('error');
+      setActionOutput(
+        `❌ Không thể cài đặt thư viện [${clean}]:\n${pyodideResult.output}\n\n` +
+        `💡 Hướng dẫn:\n` +
+        `• Hãy đảm bảo điện thoại của bạn có kết nối mạng Internet để tải gói từ PyPI.\n` +
+        `• Hầu hết các thư viện Python thuần (pure Python) và các gói chính thức (numpy, pandas, matplotlib, sympy, pyfiglet, rich, requests...) đều được hỗ trợ đầy đủ.`
+      );
     }
 
-    // 3. ALWAYS persist in installedPackages and localStorage immediately
-    const newPkg: InstalledPackage = { name: clean, version: 'installed' };
-    setInstalledPackages((prev) => {
-      const filtered = prev.filter((p) => p.name.toLowerCase() !== clean.toLowerCase());
-      const updated = [...filtered, newPkg];
-      try {
-        localStorage.setItem('pydroid3_installed_packages', JSON.stringify(updated));
-        window.dispatchEvent(new CustomEvent('pydroid:packages-updated', { detail: updated }));
-      } catch (_) {}
-      return updated;
-    });
-
-    setActionStatus('success');
-    setActionOutput(installMsg || `Đã cài đặt thành công ${clean} và lưu trữ vĩnh viễn trên thiết bị!`);
-    setCustomPkgInput('');
     setActiveActionPkg(null);
   };
 
-  // Trigger Uninstall
-  const handleUninstallPackage = async (pkgName: string) => {
-    if (!pkgName.trim()) return;
+  // Trigger Uninstall (executed after in-app confirmation)
+  const executeUninstallPackage = async (pkgName: string) => {
     const clean = pkgName.trim();
-    if (!confirm(`Bạn có chắc chắn muốn gỡ cài đặt thư viện [${clean}] không?`)) {
-      return;
-    }
+    if (!clean) return;
+    setPendingUninstallPkg(null);
 
     setActiveActionPkg(clean);
     setActionType('uninstall');
@@ -462,40 +301,44 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setActionOutput(`🗑️ [pip uninstall -y ${clean}]\nĐang tiến hành gỡ bỏ...\n`);
     setShowLogTerminal(true);
 
-    // Remove from state and localStorage immediately
+    // Try server uninstall
+    try {
+      await fetch(getApiUrl('/api/python/packages/uninstall'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: clean }),
+      }).catch(() => {});
+    } catch (_) {}
+
+    // Pyodide local uninstall
+    const pyodideUnResult = await uninstallPackageInPyodide(clean);
+
+    setActionStatus('success');
+    setActionOutput(pyodideUnResult.output || `✅ Đã gỡ bỏ thư viện [${clean}] thành công!`);
+
+    // Update list & persistent storage
     setInstalledPackages((prev) => {
       const updated = prev.filter((p) => p.name.toLowerCase() !== clean.toLowerCase());
       try {
         localStorage.setItem('pydroid3_installed_packages', JSON.stringify(updated));
-        window.dispatchEvent(new CustomEvent('pydroid:packages-updated', { detail: updated }));
       } catch (_) {}
       return updated;
     });
 
-    try {
-      const res = await fetch('/api/python/packages/uninstall', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: clean }),
-      });
-      const data = await res.json();
-      setActionOutput(data.output || (data.success ? `Đã gỡ cài đặt ${clean} thành công!` : `Lỗi: ${data.error}`));
-      setActionStatus(data.success ? 'success' : 'error');
-    } catch (_) {
-      setActionStatus('success');
-      setActionOutput(`Đã gỡ cài đặt ${clean} khỏi danh sách lưu trữ.`);
-    } finally {
-      setActiveActionPkg(null);
-    }
+    setActiveActionPkg(null);
   };
 
   useEffect(() => {
     if (isOpen) {
+      setApiGatewayUrl(getApiBaseUrl());
+      setApiTestResult(null);
+      setAiServerStatus(null);
+      setPendingUninstallPkg(null);
       testBrowserWebAssemblySupport().then(setWasmStatus).catch(() => {});
       fetchInstalledPackages();
       handleSearchPackages('');
 
-      fetch('/api/python/version')
+      fetch(getApiUrl('/api/python/version'))
         .then((res) => res.json())
         .then((data) => {
           if (data && data.cpython && data.pyodide) {
@@ -508,8 +351,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           }
         })
         .catch(() => {});
+
+      if (focusSection === 'google-account') {
+        setTimeout(() => {
+          googleSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 120);
+      }
     }
-  }, [isOpen]);
+  }, [isOpen, focusSection]);
 
   if (!isOpen) return null;
 
@@ -553,26 +402,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Content - Thu nhỏ kích thước các ô chức năng, loại bỏ các chú thích dài dòng */}
         <div className="flex-1 p-3 overflow-y-auto space-y-2.5 text-xs custom-scrollbar">
-          {/* App Brand & Icon Card */}
-          <div className="p-3 rounded-xl bg-gradient-to-r from-[#17152b] to-[#121124] border border-[#373356] flex items-center space-x-3 shadow-md">
-            <img
-              src={pydroidAppIcon}
-              alt="Biểu tượng ứng dụng Pydroid 3"
-              className="w-12 h-12 rounded-xl object-cover shadow-lg border border-amber-400/50 ring-2 ring-amber-400/20 shrink-0"
-            />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center space-x-1.5">
-                <h3 className="font-extrabold text-sm text-amber-300 truncate">Pydroid 3 Web</h3>
-                <span className="px-1.5 py-0.2 bg-emerald-500/20 text-emerald-300 text-[10px] font-bold rounded-full border border-emerald-500/30">
-                  Icon mới 2026
-                </span>
-              </div>
-              <p className="text-[11px] text-gray-400 truncate">
-                Python IDE & AI Studio cho Android
-              </p>
-            </div>
-          </div>
-
           {/* 1. Cỡ chữ Editor */}
           <div className="p-2.5 rounded-xl bg-[#141420] border border-[#262538]">
             <div className="flex items-center justify-between mb-1.5">
@@ -712,421 +541,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
-          {/* 4a. Tài khoản Google & Máy chủ Cloud Render (APK + Drive + Tasks) */}
-          <div className="p-3 rounded-xl bg-[#141420] border border-sky-500/35 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-gray-200 flex items-center space-x-1.5 text-xs">
-                <HardDrive className="w-3.5 h-3.5 text-sky-400" />
-                <span>Tài khoản Google & Dịch vụ Cloud</span>
-              </span>
-              <span
-                className={`text-[10px] font-mono px-2 py-0.5 rounded-full border font-semibold ${
-                  !needsGoogleAuth && googleProfile
-                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                    : 'bg-gray-800 text-gray-400 border-gray-700'
-                }`}
-              >
-                {!needsGoogleAuth && googleProfile ? 'Đã kết nối' : 'Chưa đăng nhập'}
-              </span>
-            </div>
-
-            {!needsGoogleAuth && googleProfile ? (
-              <div className="p-2 rounded-lg bg-[#191a2a] border border-[#2d2e47] flex items-center justify-between gap-2">
-                <div className="flex items-center space-x-2 min-w-0">
-                  {googleProfile.photoURL ? (
-                    <img
-                      src={googleProfile.photoURL}
-                      alt={googleProfile.displayName}
-                      referrerPolicy="no-referrer"
-                      className="w-7 h-7 rounded-full border border-emerald-400/50 shrink-0"
-                    />
-                  ) : (
-                    <div className="w-7 h-7 rounded-full bg-emerald-500/20 text-emerald-300 font-bold flex items-center justify-center text-xs shrink-0">
-                      {(googleProfile.displayName || 'G').slice(0, 1).toUpperCase()}
-                    </div>
-                  )}
-                  <div className="min-w-0">
-                    <div className="font-bold text-xs text-gray-100 truncate">{googleProfile.displayName}</div>
-                    <div className="text-[10px] text-gray-400 truncate">{googleProfile.email}</div>
-                  </div>
-                </div>
-                <div className="flex items-center space-x-1.5 shrink-0">
-                  {onOpenGoogleWorkspace && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onClose();
-                        onOpenGoogleWorkspace();
-                      }}
-                      className="px-2 py-1 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 rounded-lg text-[11px] font-bold cursor-pointer"
-                    >
-                      Mở Drive & Tasks
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => logout()}
-                    className="p-1.5 bg-[#262538] hover:bg-rose-950/70 text-gray-300 hover:text-rose-300 rounded-lg border border-[#35344f] cursor-pointer"
-                    title="Đăng xuất Google"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <span className="text-[11px] text-gray-400">
-                  Đăng nhập Google để dùng Google Drive, Ghi chú Cloud & Google Tasks trên Web và APK.
-                </span>
-                <GoogleSignInButton
-                  onClick={handleGoogleLoginClick}
-                  disabled={isGoogleLoggingIn}
-                  label={isGoogleLoggingIn ? 'Đang mở...' : 'Sign in with Google'}
-                  className="shrink-0 self-start"
-                />
-              </div>
-            )}
-
-            {googleAuthErr && (
-              <div className="p-2.5 rounded-lg bg-amber-950/50 border border-amber-500/40 text-amber-200 text-[11px] space-y-1">
-                <div>{googleAuthErr}</div>
-                {typeof window !== 'undefined' && window.self !== window.top && (
-                  <a
-                    href={window.location.href}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center space-x-1 text-sky-300 hover:underline font-semibold"
-                  >
-                    <span>Mở ứng dụng trong tab mới</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                )}
-              </div>
-            )}
-
-            {/* Render.com Backend URL for APK */}
-            <div className="pt-1.5 border-t border-[#242338] space-y-1.5">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-gray-300 font-semibold flex items-center space-x-1">
-                  <Server className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Máy chủ Render Backend (dành cho APK):</span>
-                </span>
-              </div>
-              <div className="flex items-center space-x-1.5">
-                <input
-                  type="url"
-                  value={renderUrlInput}
-                  onChange={(e) => setRenderUrlInput(e.target.value)}
-                  placeholder="https://pydroid3-android.onrender.com"
-                  className="flex-1 bg-[#1b1a2c] border border-[#2d2c42] rounded-lg px-2.5 py-1.5 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-sky-400 font-mono"
-                />
-                <button
-                  type="button"
-                  onClick={handleSaveRenderUrl}
-                  className="px-2.5 py-1.5 bg-sky-500 hover:bg-sky-400 text-black rounded-lg text-xs font-bold transition cursor-pointer shrink-0"
-                >
-                  Lưu URL
-                </button>
-              </div>
-              {renderUrlNotice && (
-                <div className="text-[11px] text-emerald-300 flex items-center space-x-1">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>{renderUrlNotice}</span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Trợ lý Gemini AI - Xử lý hoàn toàn phía máy chủ cho cả Web & APK */}
-          <div className="p-3 rounded-xl bg-[#141420] border border-amber-500/30 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-gray-200 flex items-center space-x-1.5 text-xs">
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>Trí tuệ nhân tạo Gemini AI</span>
-              </span>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-semibold border border-emerald-500/30">
-                gemini-4-hydrogen
-              </span>
-            </div>
-
-            <p className="text-[11px] text-gray-400 leading-relaxed">
-              ⚡ <strong>Kết nối máy chủ tự động</strong>: Toàn bộ hội thoại, streaming và Live API được xử lý qua máy chủ bảo mật (AI Studio / Render Backend) để mọi người dùng đều sử dụng được ngay mà không cần cấu hình khóa API.
-            </p>
-
-            <div className="space-y-1.5 pt-1">
-              <div className="flex items-center justify-between gap-2">
-                <button
-                  type="button"
-                  onClick={handleTestApiKey}
-                  disabled={isTestingApiKey}
-                  className="flex-1 py-1.5 px-2.5 rounded-lg bg-[#201f33] hover:bg-[#2a2944] text-gray-200 border border-[#34334d] text-xs font-semibold flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  {isTestingApiKey ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
-                  ) : (
-                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                  )}
-                  <span>{isTestingApiKey ? 'Đang kiểm tra...' : 'Kiểm tra kết nối máy chủ'}</span>
-                </button>
-              </div>
-
-              {/* Chạy chẩn đoán sâu ra Terminal */}
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  if (typeof window !== 'undefined') {
-                    window.dispatchEvent(new CustomEvent('pydroid:run-gemini-diagnostic'));
-                  }
-                }}
-                className="w-full py-1.5 px-2 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center justify-center space-x-1.5 transition cursor-pointer"
-                title="Mở Terminal và thực hiện chẩn đoán kết nối, định danh và xác thực API đầy đủ"
-              >
-                <Terminal className="w-3.5 h-3.5 text-amber-400" />
-                <span>Chạy chẩn đoán chi tiết ra Terminal</span>
-              </button>
-
-              {apiKeyStatus && (
-                <div
-                  className={`text-[11px] font-medium flex items-start space-x-2 p-2 rounded-lg border ${
-                    apiKeyStatus.ok
-                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                      : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-                  }`}
-                >
-                  {apiKeyStatus.ok ? (
-                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400 mt-0.5" />
-                  ) : (
-                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
-                  )}
-                  <span className="flex-1 break-words leading-relaxed">{apiKeyStatus.message}</span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* 4b. Tải mã nguồn lên GitHub & Xây dựng APK */}
-          <div className="p-3 rounded-xl bg-gradient-to-br from-[#12172b] to-[#151329] border border-indigo-500/30 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-gray-200 flex items-center space-x-1.5 text-xs">
-                <FolderGit2 className="w-4 h-4 text-indigo-400" />
-                <span>Đẩy lên GitHub & Tự động tạo file .APK</span>
-              </span>
-              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-semibold border border-indigo-500/30">
-                Capacitor + CI/CD
-              </span>
-            </div>
-
-            {/* PHƯƠNG PHÁP 1: DÀNH RIÊNG CHO ĐIỆN THOẠI ANDROID (100% TỰ ĐỘNG, KHÔNG CẦN MÁY TÍNH) */}
-            <div className="p-2.5 rounded-lg bg-[#0e101d] border border-indigo-500/30 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-1.5 text-xs font-bold text-amber-300">
-                  <Smartphone className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                  <span>Dành cho điện thoại (Tự động 1-Chạm)</span>
-                </div>
-                <span className="text-[9px] bg-amber-400/20 text-amber-200 px-1.5 py-0.5 rounded font-mono">
-                  Không cần PC
-                </span>
-              </div>
-
-              <p className="text-[11px] text-gray-300 leading-relaxed">
-                Trên điện thoại không thể kéo thả thư mục. Bạn chỉ cần dán <strong>GitHub Token</strong> vào đây, hệ thống sẽ tự động tạo repo và đẩy 100% mã nguồn lên GitHub của bạn!
-              </p>
-
-              {/* Ô nhập GitHub Token */}
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-[11px]">
-                  <label className="text-gray-300 font-medium flex items-center space-x-1">
-                    <Key className="w-3 h-3 text-amber-400" />
-                    <span>GitHub Personal Access Token:</span>
-                  </label>
-                  <a
-                    href="https://github.com/settings/tokens/new?scopes=repo,workflow&description=Pydroid3-APK-Builder"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-amber-400 hover:text-amber-300 text-[10px] flex items-center space-x-0.5 underline font-semibold"
-                  >
-                    <span>Lấy Token (đã chọn repo + workflow)</span>
-                    <ExternalLink className="w-2.5 h-2.5" />
-                  </a>
-                </div>
-
-                <div className="flex items-center space-x-1.5">
-                  <div className="relative flex-1">
-                    <input
-                      type={showGhToken ? 'text' : 'password'}
-                      placeholder="Dán mã ghp_... của bạn vào đây"
-                      value={ghToken}
-                      onChange={(e) => setGhToken(e.target.value)}
-                      className="w-full bg-[#181826] border border-[#2b2a3f] rounded-lg px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 outline-none focus:border-indigo-400 font-mono pr-7"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowGhToken(!showGhToken)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-200 cursor-pointer"
-                      title={showGhToken ? 'Ẩn' : 'Hiện'}
-                    >
-                      {showGhToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Ô nhập tên Repo & Nút Bấm Đẩy */}
-              <div className="flex items-center space-x-1.5">
-                <div className="w-36">
-                  <input
-                    type="text"
-                    placeholder="Tên Repo"
-                    value={ghRepoName}
-                    onChange={(e) => setGhRepoName(e.target.value)}
-                    className="w-full bg-[#181826] border border-[#2b2a3f] rounded-lg px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 outline-none focus:border-indigo-400 font-mono"
-                  />
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handlePushToGitHub}
-                  disabled={isPushingToGh || !ghToken.trim()}
-                  className="flex-1 py-1.5 px-3 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 active:scale-95 text-white font-bold rounded-lg text-xs flex items-center justify-center space-x-1.5 transition cursor-pointer shadow-md disabled:opacity-40"
-                >
-                  {isPushingToGh ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Đang tạo repo & Đẩy code...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Rocket className="w-3.5 h-3.5" />
-                      <span>🚀 Đẩy Lên GitHub & Tạo APK</span>
-                    </>
-                  )}
-                </button>
-              </div>
-
-              {/* Kết quả đẩy GitHub */}
-              {ghPushResult && (
-                <div
-                  className={`p-2 rounded-lg text-[11px] space-y-1.5 ${
-                    ghPushResult.ok
-                      ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300'
-                      : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'
-                  }`}
-                >
-                  <div className="flex items-center space-x-1.5 font-medium">
-                    {ghPushResult.ok ? (
-                      <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
-                    ) : (
-                      <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
-                    )}
-                    <span>{ghPushResult.message}</span>
-                  </div>
-
-                  {ghPushResult.ok && ghPushResult.actionsUrl && (
-                    <div className="pt-1">
-                      <a
-                        href={ghPushResult.actionsUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center space-x-1.5 py-1 px-3 bg-emerald-500 text-black font-extrabold rounded-lg text-xs hover:bg-emerald-400 transition cursor-pointer shadow"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        <span>👉 Bấm vào đây để xem Build & Tải file APK (Chờ 2 phút)</span>
-                      </a>
-                    </div>
-                  )}
-
-                  {!ghPushResult.ok && (
-                    <div className="pt-1.5 space-y-1.5">
-                      <a
-                        href="https://github.com/settings/tokens/new?scopes=repo,workflow&description=Pydroid3-APK-Builder"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center space-x-1.5 py-1.5 px-3 bg-amber-400 hover:bg-amber-300 text-black font-bold rounded-lg text-xs transition cursor-pointer shadow w-full justify-center"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        <span>🔑 Bấm vào đây để tạo Token mới (Đã tích sẵn repo + workflow)</span>
-                      </a>
-                      <p className="text-[10px] text-gray-300 leading-normal">
-                        * Mẹo: Sau khi bấm link trên, bạn chỉ cần cuộn xuống cuối trang GitHub bấm <strong>"Generate token"</strong> màu xanh, copy mã <strong>ghp_...</strong> rồi dán vào ô trên.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* PHƯƠNG PHÁP 2: DÀNH CHO MÁY TÍNH (TẢI FILE NÉN .ZIP) */}
-            <div className="space-y-1.5 pt-1">
-              <div className="text-[11px] font-semibold text-gray-400">
-                Hoặc tải về tệp nén nếu dùng máy tính:
-              </div>
-              <div className="flex items-center space-x-2">
-                <button
-                  type="button"
-                  onClick={handleDownloadSourceZip}
-                  disabled={isDownloadingZip}
-                  className="flex-1 py-1.5 px-3 bg-[#1e2038] hover:bg-[#282a4a] text-gray-200 font-semibold rounded-lg text-xs flex items-center justify-center space-x-1.5 transition cursor-pointer border border-[#333659] disabled:opacity-60"
-                >
-                  {isDownloadingZip ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Đang đóng gói...</span>
-                    </>
-                  ) : (
-                    <>
-                      <FolderArchive className="w-3.5 h-3.5 text-indigo-400" />
-                      <span>📥 Tải tệp ZIP mã nguồn</span>
-                    </>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowGitHubFileList(!showGitHubFileList)}
-                  className="py-1.5 px-2.5 bg-[#181826] hover:bg-[#232338] text-gray-300 rounded-lg text-xs flex items-center space-x-1 border border-[#2e2d45] transition cursor-pointer shrink-0"
-                >
-                  <FileCode className="w-3.5 h-3.5 text-amber-400" />
-                  <span>{showGitHubFileList ? 'Ẩn tệp' : 'Xem tệp'}</span>
-                  {showGitHubFileList ? <ChevronUp className="w-3 h-3 ml-0.5" /> : <ChevronDown className="w-3 h-3 ml-0.5" />}
-                </button>
-              </div>
-
-              {/* Thông báo trạng thái tải ZIP */}
-              {zipDownloadStatus && (
-                <div
-                  className={`p-2 rounded-lg text-[10px] flex items-center space-x-1.5 ${
-                    zipDownloadStatus.ok
-                      ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300'
-                      : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'
-                  }`}
-                >
-                  {zipDownloadStatus.ok ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
-                  ) : (
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-rose-400" />
-                  )}
-                  <span>{zipDownloadStatus.message}</span>
-                </div>
-              )}
-
-              {/* Chi tiết các tệp & thư mục */}
-              {showGitHubFileList && (
-                <div className="p-2.5 rounded-lg bg-[#0e101d] border border-indigo-500/20 space-y-1.5 text-[10px]">
-                  <div className="font-semibold text-indigo-300">
-                    📂 Các thư mục & tệp tự động đẩy lên GitHub:
-                  </div>
-                  <div className="space-y-0.5 font-mono text-gray-300 pl-1">
-                    <div>✓ <span className="text-amber-300">.github/workflows/build-apk.yml</span> (Tự tạo APK)</div>
-                    <div>✓ <span className="text-cyan-300">android/</span> (Dự án gốc Android Capacitor)</div>
-                    <div>✓ <span className="text-cyan-300">capacitor.config.ts</span> (Cấu hình app Android)</div>
-                    <div>✓ <span className="text-purple-300">package.json, src/, public/</span> (Mã nguồn IDE)</div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
           {/* 5. Tô màu cú pháp (Color Designer) - Thu gọn, xóa chú thích */}
           <div className="p-2.5 rounded-xl bg-[#141420] border border-[#262538] space-y-2">
             <div className="flex items-center justify-between">
@@ -1171,7 +585,466 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
-          {/* 6. Quản lý thư viện Python (Pip) - Gọn gàng, loại bỏ các chú thích dư thừa */}
+          {/* 6. Đóng gói APK & Tải mã nguồn */}
+          {onOpenExportApk && (
+            <div className="p-2.5 rounded-xl bg-gradient-to-r from-[#0d2a1c] to-[#122129] border border-emerald-500/50 flex items-center justify-between shadow-sm">
+              <div className="space-y-0.5 pr-2">
+                <span className="font-semibold text-emerald-300 flex items-center space-x-1.5 text-xs">
+                  <Smartphone className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span>Đóng gói APK Android (Không cần máy tính)</span>
+                </span>
+                <p className="text-[10px] text-gray-400 leading-tight">
+                  Tải file .ZIP mã nguồn & Xem hướng dẫn build APK tự động qua GitHub Actions
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenExportApk();
+                }}
+                className="px-2.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-black font-extrabold rounded-lg text-[11px] flex items-center space-x-1 transition cursor-pointer shrink-0 shadow"
+              >
+                <span>Mở</span>
+                <span>➔</span>
+              </button>
+            </div>
+          )}
+
+          {/* 7. Cổng API & Máy chủ Trợ lý AI (APK nhập Cloud Gateway, Web dùng trực tiếp máy chủ nội bộ) */}
+          <div className="p-2.5 rounded-xl bg-[#141420] border border-[#262538] space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-gray-200 flex items-center space-x-1.5 text-xs">
+                <Globe className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                <span>1. Cổng Máy chủ Cloud (Server Gateway)</span>
+              </span>
+              <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${
+                isAndroidApkEnvironment()
+                  ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
+                  : 'bg-cyan-500/10 border-cyan-500/40 text-cyan-300'
+              }`}>
+                {isAndroidApkEnvironment() ? '📱 Môi trường APK' : '🌐 Máy chủ AI Studio / Web'}
+              </span>
+            </div>
+
+            {isAndroidApkEnvironment() ? (
+              <>
+                <p className="text-[10px] text-gray-400 leading-tight">
+                  Cổng máy chủ để kết nối: <strong className="text-gray-200">Trợ lý AI Gemini</strong>, <strong className="text-gray-200">CPython Native</strong> và <strong className="text-gray-200">Pip Package Manager</strong>.
+                </p>
+
+                <div className="space-y-1.5">
+                  <div className="flex items-center space-x-1.5">
+                    <input
+                      type="text"
+                      value={apiGatewayUrl}
+                      onChange={(e) => {
+                        setApiGatewayUrl(e.target.value);
+                        setApiTestResult(null);
+                        setApiSaveSuccess(false);
+                      }}
+                      placeholder="https://ten-may-chu-cua-ban.onrender.com"
+                      className="flex-1 px-2.5 py-1.5 bg-[#0e0e18] border border-[#2b2a40] focus:border-cyan-400 rounded-lg text-xs font-mono text-gray-200 placeholder-gray-500 outline-none transition"
+                    />
+                    <button
+                      type="button"
+                      disabled={isTestingApi}
+                      onClick={async () => {
+                        setIsTestingApi(true);
+                        setApiTestResult(null);
+                        const res = await testApiGatewayConnection(apiGatewayUrl);
+                        setApiTestResult(res);
+                        if (res.ok && apiGatewayUrl.trim()) {
+                          setApiBaseUrl(apiGatewayUrl);
+                          setApiSaveSuccess(true);
+                          setTimeout(() => setApiSaveSuccess(false), 2500);
+                          setIsTestingAiServer(true);
+                          const aiRes = await testServerAiStatus(apiGatewayUrl);
+                          setAiServerStatus(aiRes);
+                          setIsTestingAiServer(false);
+                        }
+                        setIsTestingApi(false);
+                      }}
+                      className="px-2.5 py-1.5 bg-cyan-600 hover:bg-cyan-500 active:scale-95 disabled:opacity-50 text-white font-bold rounded-lg text-xs flex items-center space-x-1 transition cursor-pointer shrink-0"
+                    >
+                      <Wifi className={`w-3 h-3 ${isTestingApi ? 'animate-pulse' : ''}`} />
+                      <span>{isTestingApi ? 'Đang thử...' : 'Kiểm tra'}</span>
+                    </button>
+                  </div>
+
+                  {/* Action buttons: Reset to Local, Save */}
+                  <div className="flex items-center justify-between text-[11px] pt-0.5 flex-wrap gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setApiGatewayUrl('');
+                        setApiBaseUrl('');
+                        setApiTestResult(null);
+                        setApiSaveSuccess(true);
+                        setTimeout(() => setApiSaveSuccess(false), 2500);
+                      }}
+                      className="text-cyan-400 hover:text-cyan-300 flex items-center space-x-1 cursor-pointer transition text-[10px]"
+                      title="Dùng cổng nội bộ (khi chạy ngoại tuyến Pyodide)"
+                    >
+                      <RotateCcw className="w-2.5 h-2.5" />
+                      <span>Xóa Cổng Cloud (Dùng ngoại tuyến)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setApiBaseUrl(apiGatewayUrl);
+                        setApiSaveSuccess(true);
+                        setTimeout(() => setApiSaveSuccess(false), 2500);
+                      }}
+                      className={`px-2.5 py-0.5 rounded font-bold transition flex items-center space-x-1 text-[11px] cursor-pointer ${
+                        apiSaveSuccess
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50'
+                          : 'bg-[#1e1d30] hover:bg-[#282740] text-gray-200 border border-[#353450]'
+                      }`}
+                    >
+                      {apiSaveSuccess ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-400" />
+                          <span>Đã lưu!</span>
+                        </>
+                      ) : (
+                        <span>Lưu Cổng Máy chủ</span>
+                      )}
+                    </button>
+                  </div>
+
+                  {apiTestResult && (
+                    <div
+                      className={`p-2 rounded-lg text-[10px] flex items-start space-x-2 border transition ${
+                        apiTestResult.ok
+                          ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+                          : 'bg-rose-950/40 border-rose-500/40 text-rose-300'
+                      }`}
+                    >
+                      {apiTestResult.ok ? (
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
+                      )}
+                      <div className="flex-1 leading-tight">
+                        <div className="font-semibold flex items-center space-x-1.5">
+                          <span>{apiTestResult.message}</span>
+                          <span className="font-mono text-[9px] px-1 py-0.2 rounded bg-black/40">
+                            ⚡ {apiTestResult.latencyMs}ms
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="space-y-1.5">
+                <p className="text-[10px] text-gray-300 leading-relaxed">
+                  Phiên bản Web / AI Studio đang kết nối trực tiếp tới máy chủ nội bộ (<code className="text-cyan-300">/api/*</code>) của phiên hiện tại — không cần nhập URL bên ngoài.
+                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    disabled={isTestingApi}
+                    onClick={async () => {
+                      setIsTestingApi(true);
+                      setApiTestResult(null);
+                      const res = await testApiGatewayConnection('');
+                      setApiTestResult(res);
+                      setIsTestingAiServer(true);
+                      const aiRes = await testServerAiStatus();
+                      setAiServerStatus(aiRes);
+                      setIsTestingAiServer(false);
+                      setIsTestingApi(false);
+                    }}
+                    className="px-2.5 py-1.5 bg-cyan-600 hover:bg-cyan-500 active:scale-95 disabled:opacity-50 text-white font-bold rounded-lg text-xs flex items-center space-x-1 transition cursor-pointer shrink-0"
+                  >
+                    <Wifi className={`w-3 h-3 ${isTestingApi ? 'animate-pulse' : ''}`} />
+                    <span>{isTestingApi ? 'Đang kiểm tra...' : 'Kiểm tra máy chủ nội bộ'}</span>
+                  </button>
+                  {apiTestResult && (
+                    <span className={`text-[10px] font-mono ${apiTestResult.ok ? 'text-emerald-300' : 'text-rose-300'}`}>
+                      {apiTestResult.ok ? `✓ Sẵn sàng (${apiTestResult.latencyMs}ms)` : apiTestResult.message}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 8. Tài khoản Google, Google Drive & Dịch vụ Gemini AI */}
+          <div ref={googleSectionRef} className="p-2.5 rounded-xl bg-[#141420] border border-[#262538] space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-semibold text-gray-200 flex items-center space-x-1.5 text-xs">
+                <Cloud className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                <span>2. Tài khoản Google, Google Drive &amp; Gemini AI</span>
+              </span>
+              <span
+                className={`text-[9px] font-bold px-2 py-0.5 rounded border shrink-0 ${
+                  googleUser && googleAccessToken
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                    : googleUser
+                    ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                    : 'bg-gray-800/80 border-gray-700 text-gray-300'
+                }`}
+              >
+                {googleUser && googleAccessToken
+                  ? 'Đã kết nối Google'
+                  : googleUser
+                  ? 'Cần xác thực lại'
+                  : 'Chưa đăng nhập'}
+              </span>
+            </div>
+
+            {/* Google Account Card */}
+            <div className="p-2.5 rounded-lg bg-[#0e0e18] border border-[#2b2a40] space-y-2.5">
+              {googleUser ? (
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center space-x-2.5 min-w-0">
+                    {googleUser.photoURL ? (
+                      <img
+                        src={googleUser.photoURL}
+                        alt={googleUser.displayName || 'Google User'}
+                        className="w-9 h-9 rounded-full border border-emerald-400/50 object-cover shrink-0"
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <div className="w-9 h-9 rounded-full bg-sky-500/20 border border-sky-400/40 flex items-center justify-center text-sky-300 font-bold text-sm shrink-0">
+                        {(googleUser.displayName?.[0] || googleUser.email?.[0] || 'G').toUpperCase()}
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <div className="font-bold text-xs text-gray-100 truncate">
+                        {googleUser.displayName || 'Người dùng Google'}
+                      </div>
+                      <div className="text-[10px] text-gray-400 truncate font-mono">
+                        {googleUser.email || 'Đã xác thực'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center space-x-1.5 shrink-0">
+                    {googleAccessToken && onOpenFileManager && (
+                      <button
+                        type="button"
+                        onClick={onOpenFileManager}
+                        className="px-2.5 py-1 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 rounded-lg text-[11px] font-bold flex items-center space-x-1 cursor-pointer transition active:scale-95"
+                      >
+                        <FolderOpen className="w-3 h-3" />
+                        <span>Mở Google Drive</span>
+                      </button>
+                    )}
+                    {onGoogleSignOut && (
+                      <button
+                        type="button"
+                        onClick={onGoogleSignOut}
+                        className="px-2.5 py-1 bg-rose-950/60 hover:bg-rose-900/70 text-rose-300 border border-rose-500/40 rounded-lg text-[11px] font-bold flex items-center space-x-1 cursor-pointer transition active:scale-95"
+                      >
+                        <LogOut className="w-3 h-3" />
+                        <span>Đăng xuất</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-[11px] text-gray-300 leading-relaxed">
+                    Đăng nhập bằng <strong className="text-white">Tài khoản Google</strong> để lưu và đồng bộ tệp mã nguồn <code className="text-sky-300">.py</code> lên Google Drive, đồng thời sẵn sàng mở rộng kết nối các dịch vụ Google Workspace khác.
+                  </p>
+                </div>
+              )}
+
+              {(!googleAccessToken || needsGoogleAuth || !googleUser) && onGoogleSignIn && (
+                <div className="pt-0.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <GoogleSignInButton
+                    onClick={onGoogleSignIn}
+                    isLoading={isGoogleSigningIn}
+                    label={googleUser ? 'Kết nối lại Google Drive' : 'Đăng nhập bằng Google'}
+                    compact
+                  />
+                  {googleUser && !googleAccessToken && (
+                    <span className="text-[10px] text-amber-300">
+                      Phiên truy cập tạm thời đã làm mới — bấm để cấp lại quyền Drive.
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {googleAuthError && (
+                <div className="p-2 rounded-lg bg-rose-950/40 border border-rose-500/40 text-rose-300 text-[10px] flex items-start space-x-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
+                  <span>{googleAuthError}</span>
+                </div>
+              )}
+
+              {isAndroidApkEnvironment() && (!googleUser || !googleAccessToken) && (
+                <div className="p-2.5 rounded-lg bg-sky-950/30 border border-sky-500/30 text-[10px] text-sky-200 space-y-2">
+                  <p className="leading-relaxed text-gray-300">
+                    <strong className="text-sky-300">Mẹo cho người dùng APK:</strong> Google OAuth chặn đăng nhập trực tiếp trong Android WebView (<code className="text-amber-300">disallowed_useragent</code>) và tên miền <code className="text-amber-300">localhost</code> chưa nằm trong Firebase Auth. Bạn có thể mở bản Web bằng <strong>Chrome</strong> để đăng nhập Google &amp; đồng bộ Drive:
+                  </p>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <a
+                      href={DEFAULT_CLOUD_API_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2.5 py-1.5 bg-sky-500/20 hover:bg-sky-500/30 text-sky-200 border border-sky-400/50 rounded-lg font-bold flex items-center space-x-1 transition"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      <span>Mở bản AI Studio Web trên Chrome</span>
+                    </a>
+                    {apiGatewayUrl.trim().startsWith('http') &&
+                      apiGatewayUrl.trim().replace(/\/+$/, '') !== DEFAULT_CLOUD_API_URL && (
+                        <>
+                          <a
+                            href={apiGatewayUrl.trim().replace(/\/+$/, '')}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-2.5 py-1.5 bg-[#1b1a2e] hover:bg-[#262540] text-gray-200 border border-[#3a385c] rounded-lg font-semibold flex items-center space-x-1 transition"
+                          >
+                            <ExternalLink className="w-3 h-3 text-cyan-300" />
+                            <span>Mở Render trên Chrome</span>
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              try {
+                                const host = new URL(apiGatewayUrl.trim()).hostname;
+                                navigator.clipboard?.writeText(host);
+                                setApiSaveSuccess(true);
+                                setTimeout(() => setApiSaveSuccess(false), 2000);
+                              } catch (_) {}
+                            }}
+                            className="px-2.5 py-1.5 bg-[#1b1a2e] hover:bg-[#262540] text-gray-200 border border-[#3a385c] rounded-lg font-semibold flex items-center space-x-1 cursor-pointer transition"
+                          >
+                            <Copy className="w-3 h-3 text-amber-300" />
+                            <span>Sao chép tên miền Render cho Firebase</span>
+                          </button>
+                        </>
+                      )}
+                  </div>
+                  {apiGatewayUrl.trim().startsWith('http') &&
+                    apiGatewayUrl.trim().replace(/\/+$/, '') !== DEFAULT_CLOUD_API_URL && (
+                      <p className="text-[9.5px] text-amber-200/90 leading-snug">
+                        Lưu ý: Nếu đăng nhập Google trên URL Render riêng, hãy vào <strong>Firebase Console &gt; Authentication &gt; Settings &gt; Authorized domains</strong> và thêm tên miền Render ở trên.
+                      </p>
+                    )}
+                </div>
+              )}
+
+              {/* Dịch vụ Google hỗ trợ & Định hướng mở rộng */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1 border-t border-[#222136]">
+                <div className="p-2 rounded-lg bg-[#141422] border border-[#25243b] flex items-center justify-between">
+                  <div className="flex items-center space-x-1.5">
+                    <Cloud className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                    <div>
+                      <div className="text-[11px] font-semibold text-gray-200">Google Drive (.py)</div>
+                      <div className="text-[9px] text-gray-400">Lưu &amp; mở mã nguồn đám mây</div>
+                    </div>
+                  </div>
+                  <span
+                    className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                      googleAccessToken
+                        ? 'bg-emerald-500/15 text-emerald-300'
+                        : 'bg-gray-800 text-gray-400'
+                    }`}
+                  >
+                    {googleAccessToken ? 'Sẵn sàng' : 'Chờ đăng nhập'}
+                  </span>
+                </div>
+
+                <div className="p-2 rounded-lg bg-[#141422] border border-[#25243b] flex items-center justify-between">
+                  <div className="flex items-center space-x-1.5">
+                    <ServicesIcon className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                    <div>
+                      <div className="text-[11px] font-semibold text-gray-200">Hệ sinh thái mở rộng</div>
+                      <div className="text-[9px] text-gray-400">Sheets, Docs, Classroom</div>
+                    </div>
+                  </div>
+                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300">
+                    Sắp ra mắt
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Server-side Gemini AI Live Health Check */}
+            <div className="p-2.5 rounded-lg bg-[#0e0e18] border border-[#2b2a40] flex items-center justify-between gap-2">
+              <div className="flex items-center space-x-2 min-w-0">
+                <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-[11px] text-gray-200 font-medium flex items-center space-x-1">
+                    <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />
+                    <span>Trợ lý Google Gemini 3.8 Flash &amp; Live API</span>
+                  </div>
+                  <div className="text-[9px] text-emerald-400 font-mono truncate">
+                    Xử lý tự động phía máy chủ • Dự phòng PEP 8 ngoại tuyến
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={isTestingAiServer}
+                onClick={async () => {
+                  setIsTestingAiServer(true);
+                  setAiServerStatus(null);
+                  const res = await testServerAiStatus(
+                    isAndroidApkEnvironment() ? (apiGatewayUrl.trim() || undefined) : undefined
+                  );
+                  setAiServerStatus(res);
+                  setIsTestingAiServer(false);
+                }}
+                className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 active:scale-95 disabled:opacity-50 font-bold rounded-lg text-xs flex items-center space-x-1 transition cursor-pointer shrink-0"
+              >
+                <RefreshCw className={`w-3 h-3 ${isTestingAiServer ? 'animate-spin' : ''}`} />
+                <span>{isTestingAiServer ? 'Đang kiểm tra...' : 'Kiểm tra trạng thái'}</span>
+              </button>
+            </div>
+
+            {aiServerStatus && (
+              <div
+                className={`p-2 rounded-lg text-[10px] flex items-start space-x-2 border transition ${
+                  aiServerStatus.ok
+                    ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+                    : 'bg-rose-950/40 border-rose-500/40 text-rose-300'
+                }`}
+              >
+                {aiServerStatus.ok ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
+                )}
+                <div className="flex-1 leading-tight space-y-1">
+                  <div className="font-semibold">{aiServerStatus.message}</div>
+                  {aiServerStatus.diagnostic && !aiServerStatus.ok && (
+                    <div className="text-[9.5px] font-mono text-amber-200/90 bg-black/30 px-2 py-1 rounded border border-rose-500/30">
+                      {aiServerStatus.diagnostic.keyPresent
+                        ? `Máy chủ đã nhận ${aiServerStatus.diagnostic.keySource} (${aiServerStatus.diagnostic.geminiKeyLen || 0} ký tự), nhưng Google trả về HTTP ${aiServerStatus.diagnostic.httpStatus ?? 'lỗi'}: khóa hiện tại bị từ chối (API_KEY_INVALID).`
+                        : 'Máy chủ chưa có biến môi trường GEMINI_API_KEY.'}
+                    </div>
+                  )}
+                  <p className={`text-[10px] ${aiServerStatus.ok ? 'text-emerald-400/80' : 'text-rose-300/80'}`}>
+                    ⚡ Mô hình hoạt động: <strong className="font-mono text-white">{aiServerStatus.model}</strong>.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="p-2 rounded-lg bg-[#0e0e16] border border-[#222135] text-[10px] text-gray-400 space-y-1">
+              <div className="font-semibold text-gray-300 flex items-center space-x-1">
+                <span>ℹ️ Kiến trúc kết nối &amp; Hướng dẫn thiết lập:</span>
+              </div>
+              <p>
+                • <strong>Đăng nhập Google &amp; Drive:</strong> Hoạt động trên bản Web / Chrome PWA (các tên miền ngoài AI Studio như <code className="text-sky-300">*.onrender.com</code> cần được thêm vào <em>Firebase Console &gt; Authentication &gt; Authorized domains</em>).
+              </p>
+              <p>
+                • <strong>Kết nối Gemini AI (Không dùng cổng nhập khóa trong app):</strong> Cấu hình biến <code className="text-amber-300">GEMINI_API_KEY</code> ở máy chủ (<strong className="text-gray-200">Settings &gt; Secrets</strong> trên AI Studio hoặc <strong className="text-gray-200">Environment Variables</strong> trên Render). Khi chưa có khóa hợp lệ hoặc ngoại tuyến, bộ phân tích PEP 8 nội bộ luôn hoạt động tự động.
+              </p>
+            </div>
+          </div>
+
+          {/* 8. Quản lý thư viện Python (Pip) - Gọn gàng, loại bỏ các chú thích dư thừa */}
           <div className="p-2.5 rounded-xl bg-[#141420] border border-[#262538] space-y-2">
             <div className="flex items-center justify-between">
               <span className="font-semibold text-gray-200 flex items-center space-x-1.5">
@@ -1195,7 +1068,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     handleInstallPackage(customPkgInput.trim());
                   }
                 }}
-                className="flex-1 bg-[#181826] border border-[#2b2a3f] rounded-lg px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 outline-none focus:border-amber-400 font-mono"
+                className="flex-1 bg-[#181826] border border-[#2b2a3f] rounded-lg px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 outline-none focus:border-amber-400 font-mono select-text"
               />
               <button
                 type="button"
@@ -1408,7 +1281,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             {!['pip', 'setuptools', 'wheel'].includes(pkg.name.toLowerCase()) && (
                               <button
                                 type="button"
-                                onClick={() => handleUninstallPackage(pkg.name)}
+                                onClick={() => setPendingUninstallPkg(pkg.name)}
                                 disabled={actionStatus === 'running'}
                                 className="p-1 bg-red-950/60 hover:bg-red-900 border border-red-500/30 text-red-300 rounded transition cursor-pointer disabled:opacity-50"
                                 title={`Gỡ bỏ ${pkg.name}`}
@@ -1421,6 +1294,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       ))
                     )}
                   </div>
+
+                  {pendingUninstallPkg && (
+                    <div className="p-2 rounded-lg bg-red-950/50 border border-red-500/40 flex items-center justify-between gap-2 text-[11px]">
+                      <span className="text-red-200 truncate">
+                        Gỡ bỏ thư viện <strong className="font-mono">{pendingUninstallPkg}</strong>?
+                      </span>
+                      <div className="flex items-center space-x-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setPendingUninstallPkg(null)}
+                          className="px-2 py-0.5 rounded bg-[#232236] hover:bg-[#31304b] text-gray-300 font-semibold cursor-pointer"
+                        >
+                          Hủy
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => executeUninstallPackage(pendingUninstallPkg)}
+                          className="px-2 py-0.5 rounded bg-red-600 hover:bg-red-500 text-white font-bold cursor-pointer"
+                        >
+                          Xác nhận gỡ
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -1,9 +1,5 @@
 import { ExecutionResult } from '../types';
-import { getRenderBackendUrl, isRunningInsideNativeApk } from './googleAuth';
-
-function getPythonBackendBaseUrl(): string {
-  return isRunningInsideNativeApk() ? getRenderBackendUrl() : '';
-}
+import { getApiUrl, getWebSocketUrl } from './apiConfig';
 
 export interface RunCallbacks {
   onStdout: (text: string) => void;
@@ -27,9 +23,8 @@ export class PythonWebSocketRunner {
   private mode: 'ws' | 'sse' = 'ws';
 
   public async checkStatus(): Promise<{ ok: boolean; message: string }> {
-    const baseUrl = getPythonBackendBaseUrl();
     try {
-      const res = await fetch(`${baseUrl}/api/python/session/start`, {
+      const res = await fetch(getApiUrl('/api/python/session/start'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: '# healthcheck', stdin: '' }),
@@ -38,7 +33,7 @@ export class PythonWebSocketRunner {
         const data = await res.json();
         // Clean up the healthcheck session
         if (data.sessionId) {
-          fetch(`${baseUrl}/api/python/session/${data.sessionId}/stop`, { method: 'POST' }).catch(() => {});
+          fetch(getApiUrl(`/api/python/session/${data.sessionId}/stop`), { method: 'POST' }).catch(() => {});
         }
         return { ok: true, message: 'CPython Native sẵn sàng' };
       }
@@ -56,16 +51,7 @@ export class PythonWebSocketRunner {
     const supportsWs = typeof WebSocket !== 'undefined';
     if (supportsWs) {
       try {
-        const baseUrl = getPythonBackendBaseUrl();
-        let wsUrl = '';
-        if (baseUrl && baseUrl.startsWith('http')) {
-          const parsed = new URL(baseUrl);
-          const wsProto = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-          wsUrl = `${wsProto}//${parsed.host}/api/python/ws`;
-        } else {
-          const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-          wsUrl = `${protocol}//${window.location.host}/api/python/ws`;
-        }
+        const wsUrl = getWebSocketUrl('/api/python/ws');
         const ws = new WebSocket(wsUrl);
         this.ws = ws;
         this.mode = 'ws';
@@ -141,8 +127,7 @@ export class PythonWebSocketRunner {
     callbacks.onSystem('⚡ Đang khởi động tiến trình CPython qua HTTP/SSE...');
 
     try {
-      const baseUrl = getPythonBackendBaseUrl();
-      const res = await fetch(`${baseUrl}/api/python/session/start`, {
+      const res = await fetch(getApiUrl('/api/python/session/start'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code, stdin }),
@@ -156,7 +141,7 @@ export class PythonWebSocketRunner {
       const { sessionId } = await res.json();
       this.activeSessionId = sessionId;
 
-      this.eventSource = new EventSource(`${baseUrl}/api/python/session/${sessionId}/events`);
+      this.eventSource = new EventSource(getApiUrl(`/api/python/session/${sessionId}/events`));
 
       this.eventSource.onmessage = (event) => {
         try {
@@ -208,9 +193,8 @@ export class PythonWebSocketRunner {
     }
 
     if (this.activeSessionId) {
-      const baseUrl = getPythonBackendBaseUrl();
       try {
-        await fetch(`${baseUrl}/api/python/session/${this.activeSessionId}/input`, {
+        await fetch(getApiUrl(`/api/python/session/${this.activeSessionId}/input`), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ data: text }),
@@ -231,8 +215,7 @@ export class PythonWebSocketRunner {
     }
 
     if (this.activeSessionId) {
-      const baseUrl = getPythonBackendBaseUrl();
-      fetch(`${baseUrl}/api/python/session/${this.activeSessionId}/stop`, { method: 'POST' }).catch(() => {});
+      fetch(getApiUrl(`/api/python/session/${this.activeSessionId}/stop`), { method: 'POST' }).catch(() => {});
     }
 
     this.cleanup();
@@ -294,7 +277,9 @@ async function loadScriptWithTimeout(src: string, timeoutMs: number): Promise<vo
 
     const script = document.createElement('script');
     script.src = src;
-    script.crossOrigin = 'anonymous';
+    if (src.startsWith('http://') || src.startsWith('https://')) {
+      script.crossOrigin = 'anonymous';
+    }
     script.async = true;
 
     let timer: any = null;
@@ -540,6 +525,19 @@ function needsExternalPackageLoading(code: string): boolean {
   return false;
 }
 
+function extractExternalImports(code: string): string[] {
+  const importRegex = /(?:^|\n)\s*(?:import|from)\s+([a-zA-Z0-9_]+)/g;
+  const list = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = importRegex.exec(code)) !== null) {
+    const mod = match[1];
+    if (mod && !BUILTIN_STDLIB_MODULES.has(mod)) {
+      list.add(mod);
+    }
+  }
+  return Array.from(list);
+}
+
 /**
  * Pyodide WebAssembly (WASM) in-browser runner for client-side offline execution
  */
@@ -571,37 +569,6 @@ export class PyodideRunner {
   }
 
   /**
-   * Preload and initialize installed packages from localStorage into Pyodide runtime.
-   * Ensures that packages like pyfiglet, numpy, colorama, etc. are pre-loaded in memory
-   * and immediately ready for execution upon app startup.
-   */
-  /**
-   * Safe Pyodide runtime warmup without triggering network errors for missing wheels.
-   * Warms up WebAssembly engine and micropip silently.
-   */
-  public async preloadInstalledPackages(packageNames?: string[]): Promise<void> {
-    if (typeof window === 'undefined') return;
-    try {
-      const wasmCheck = await testBrowserWebAssemblySupport();
-      if (!wasmCheck.ok) return;
-
-      const pyodide = await this.initializeWithRetries();
-      if (!pyodide) return;
-
-      // Silently pre-load micropip so on-demand installs are fast
-      try {
-        if (typeof pyodide.loadPackage === 'function') {
-          await pyodide.loadPackage('micropip');
-        }
-      } catch (_) {
-        // Silently ignore if offline
-      }
-    } catch (_) {
-      // Silently ignore warmup errors to prevent startup noise
-    }
-  }
-
-  /**
    * Initialize Pyodide with multi-source fallback and exponential backoff retry mechanism.
    * - Sources: Local Server (from node_modules/pyodide), jsDelivr CDN, cdnjs CDN, unpkg CDN
    * - Singleton promise prevents duplicate colliding downloads
@@ -619,32 +586,38 @@ export class PyodideRunner {
         ? window.location.origin
         : '';
       const localIndex = origin ? `${origin}/pyodide/` : '/pyodide/';
-      // Official Pyodide repository CDN hosting full pre-built wheels (numpy, pandas, scipy, matplotlib, etc.)
-      const officialPyodideCdn = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
 
       const sources = [
         {
           name: 'Máy chủ nội bộ ứng dụng (Local Server)',
           scriptUrl: '/pyodide/pyodide.js',
-          indexURL: officialPyodideCdn,
+          indexURL: localIndex,
           stdLibURL: `${localIndex}python_stdlib.zip`,
-          timeoutMs: 15000,
+          timeoutMs: 40000,
           label: 'Local Server',
         },
         {
           name: 'Máy chủ jsDelivr CDN chính thức',
           scriptUrl: 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js',
-          indexURL: officialPyodideCdn,
+          indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/',
           stdLibURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/python_stdlib.zip',
-          timeoutMs: 20000,
+          timeoutMs: 35000,
           label: 'jsDelivr CDN',
+        },
+        {
+          name: 'Máy chủ Fastly CDN dự phòng',
+          scriptUrl: 'https://fastly.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js',
+          indexURL: 'https://fastly.jsdelivr.net/pyodide/v0.26.4/full/',
+          stdLibURL: 'https://fastly.jsdelivr.net/pyodide/v0.26.4/full/python_stdlib.zip',
+          timeoutMs: 35000,
+          label: 'Fastly CDN',
         },
         {
           name: 'Máy chủ unpkg CDN dự phòng',
           scriptUrl: 'https://unpkg.com/pyodide@0.26.4/pyodide.js',
           indexURL: 'https://unpkg.com/pyodide@0.26.4/',
           stdLibURL: 'https://unpkg.com/pyodide@0.26.4/python_stdlib.zip',
-          timeoutMs: 20000,
+          timeoutMs: 35000,
           label: 'unpkg CDN',
         },
       ];
@@ -669,7 +642,21 @@ export class PyodideRunner {
             throw new Error(`Tệp script đã tải nhưng hàm loadPyodide không khả dụng.`);
           }
 
-          // Step B: Call loaderFn({ indexURL, stdLibURL })
+          // Step B: Pre-flight check that stdLibURL is reachable and doesn't return 403/404
+          try {
+            const checkResp = await fetch(source.stdLibURL, { method: 'HEAD' });
+            if (!checkResp.ok && checkResp.status !== 405) {
+              if (checkResp.status === 403 || checkResp.status === 404) {
+                throw new Error(`Tệp thư viện chuẩn không tìm thấy (HTTP ${checkResp.status})`);
+              }
+            }
+          } catch (headErr: any) {
+            if (headErr?.message?.includes('HTTP 403') || headErr?.message?.includes('HTTP 404')) {
+              throw headErr;
+            }
+          }
+
+          // Step C: Call loaderFn({ indexURL, stdLibURL })
           const initPromise = loaderFn({
             indexURL: source.indexURL,
             stdLibURL: source.stdLibURL,
@@ -1018,59 +1005,39 @@ def _pydroid_transform(user_code):
 
       try {
         if (needsExternalPackageLoading(code)) {
-          // 1. Let Pyodide load its built-in binary packages (numpy, pandas, matplotlib, scipy, etc.)
           if (typeof pyodide.loadPackagesFromImports === 'function') {
             try {
               await pyodide.loadPackagesFromImports(code, {
-                messageCallback: (msg: string) => {
-                  callbacks.onSystem(`⚡ ${msg}`);
-                },
+                errorCallback: () => {},
               });
-            } catch (pkgErr: any) {
-              const errStr = String(pkgErr?.message || pkgErr);
-              console.warn('[Pyodide] loadPackagesFromImports warning:', pkgErr);
-              if (
-                errStr.includes('Failed to fetch') ||
-                errStr.includes('NetworkError') ||
-                errStr.includes('loading') ||
-                errStr.includes('404')
-              ) {
-                throw new Error(`Không thể tải gói WASM từ mạng (${errStr}). Chuyển sang CPython Native.`);
-              }
+            } catch (_) {
+              // Ignore if offline or third-party package
             }
           }
 
-          // 2. Only for remaining pure-Python packages that are not yet installed, load via micropip
-          const importMatches = Array.from(code.matchAll(/(?:^|\n)\s*(?:import|from)\s+([a-zA-Z0-9_]+)/g)).map((m) => m[1]);
-          for (const mod of importMatches) {
-            if (mod && !BUILTIN_STDLIB_MODULES.has(mod)) {
-              try {
-                // Check if module is already installed and importable
-                const isAvailable = await pyodide.runPythonAsync(`
-import importlib.util
-importlib.util.find_spec('${mod}') is not None
-`);
-                if (!isAvailable) {
+          const extImports = extractExternalImports(code);
+          if (extImports.length > 0 && typeof pyodide.loadPackage === 'function') {
+            try {
+              await pyodide.loadPackage('micropip', {
+                errorCallback: () => {},
+              });
+              if (typeof pyodide.pyimport === 'function') {
+                const micropip = pyodide.pyimport('micropip');
+                for (const pkg of extImports) {
                   try {
-                    await pyodide.loadPackage('micropip');
-                    const micropip = pyodide.pyimport('micropip');
-                    callbacks.onSystem(`⚡ Đang cài đặt ${mod} qua micropip...`);
-                    await micropip.install(mod);
-                    // Remember package in localStorage
-                    try {
-                      const saved = localStorage.getItem('pydroid3_installed_packages');
-                      const parsed = saved ? JSON.parse(saved) : [];
-                      if (!parsed.some((p: any) => p.name.toLowerCase() === mod.toLowerCase())) {
-                        parsed.push({ name: mod, version: 'installed' });
-                        localStorage.setItem('pydroid3_installed_packages', JSON.stringify(parsed));
-                      }
-                    } catch (_) {}
-                  } catch (installErr) {
-                    console.warn(`[Pyodide] Auto-install via micropip skipped for '${mod}':`, installErr);
+                    const isLoaded = await pyodide.runPythonAsync(`'${pkg}' in __import__('sys').modules`);
+                    if (!isLoaded) {
+                      await micropip.install(pkg);
+                    }
+                  } catch (_) {
+                    // Fall back gracefully to CPython if micropip cannot install
                   }
                 }
-              } catch (_) {}
-            }
+                if (micropip && typeof micropip.destroy === 'function') {
+                  micropip.destroy();
+                }
+              }
+            } catch (_) {}
           }
         }
         await pyodide.runPythonAsync(codeToRun);
@@ -1098,33 +1065,23 @@ sys.settrace(None)
         errMsg.includes('Tiến trình đã được dừng');
       const isLoopTimeout = errMsg.includes('PydroidLoopGuard') || errMsg.includes('vòng lặp vô tận') || errMsg.includes('Timeout');
 
-      const isPackageOrEngineError =
-        errMsg.includes('Failed to fetch') ||
-        errMsg.includes('loading') ||
-        errMsg.includes('loadPackage') ||
-        errMsg.includes('Không thể tải gói') ||
-        errMsg.includes('ModuleNotFoundError') ||
-        errMsg.includes('No module named') ||
-        errMsg.includes('WASM') ||
-        errMsg.includes('WebAssembly') ||
-        errMsg.includes('loadPyodide');
-
       if (isInterrupted) {
         callbacks.onSystem('🛑 Tiến trình Python đã dừng an toàn theo yêu cầu.');
         callbacks.onExit({ exitCode: 130, executionTimeMs: Math.round(performance.now() - startTime), stopped: true });
         return;
       } else if (isLoopTimeout) {
         callbacks.onStderr(`⚠️ ${errMsg}`);
-      } else if (onFallbackToCpython && isPackageOrEngineError) {
-        const isModuleOrFetch =
+      } else if (
+        onFallbackToCpython &&
+        (errMsg.includes('WASM') ||
+          errMsg.includes('WebAssembly') ||
+          errMsg.includes('loadPyodide') ||
           errMsg.includes('ModuleNotFoundError') ||
-          errMsg.includes('No module named') ||
-          errMsg.includes('Failed to fetch') ||
-          errMsg.includes('loading');
-        if (!isModuleOrFetch) {
+          errMsg.includes('No module named'))
+      ) {
+        const isMissingModule = errMsg.includes('ModuleNotFoundError') || errMsg.includes('No module named');
+        if (!isMissingModule) {
           callbacks.onStderr(`⚠️ Sự cố Pyodide WASM: ${errMsg}`);
-        } else {
-          callbacks.onSystem('🔄 Đang tự động chuyển tiếp thực thi qua [CPython Native] để hỗ trợ gói đầy đủ...');
         }
         try {
           await onFallbackToCpython(errMsg);
@@ -1176,3 +1133,139 @@ sys.settrace(None)
     return this.isRunning;
   }
 }
+
+/**
+ * Install a Python package directly into Pyodide WASM on-device.
+ * Supports:
+ * - Built-in compiled Pyodide wheels (numpy, pandas, scipy, matplotlib, sympy, pillow, etc.)
+ * - Any pure-python package from PyPI via micropip (pyfiglet, cowsay, rich, requests, etc.)
+ */
+export async function installPackageInPyodide(
+  pkgName: string
+): Promise<{ success: boolean; version?: string; output: string }> {
+  const clean = pkgName.trim();
+  if (!clean) {
+    return { success: false, output: 'Tên gói thư viện không hợp lệ.' };
+  }
+
+  try {
+    const runner = new PyodideRunner();
+    let pyodide = (typeof window !== 'undefined' && (window as any).pyodideInstance) || null;
+    if (!pyodide) {
+      pyodide = await (runner as any).initializeWithRetries();
+    }
+    if (!pyodide) {
+      return { success: false, output: 'Không thể khởi tạo môi trường Python Pyodide trên thiết bị.' };
+    }
+
+    let installedViaPyodide = false;
+
+    // 1. Try pyodide.loadPackage first for official precompiled binary wheels (numpy, pandas, etc.)
+    if (typeof pyodide.loadPackage === 'function') {
+      try {
+        await pyodide.loadPackage(clean, {
+          errorCallback: () => {},
+        });
+        installedViaPyodide = true;
+      } catch (_) {
+        // Not a built-in precompiled package, will use micropip
+      }
+    }
+
+    // 2. Use micropip for pure Python packages or general PyPI wheels (pyfiglet, cowsay, rich, requests, etc.)
+    if (!installedViaPyodide) {
+      if (typeof pyodide.loadPackage === 'function') {
+        try {
+          await pyodide.loadPackage('micropip', { errorCallback: () => {} });
+        } catch (_) {}
+      }
+
+      if (typeof pyodide.pyimport === 'function') {
+        try {
+          const micropip = pyodide.pyimport('micropip');
+          await micropip.install(clean);
+          if (micropip && typeof micropip.destroy === 'function') {
+            micropip.destroy();
+          }
+        } catch (mpErr: any) {
+          // Fallback to runPythonAsync
+          await pyodide.runPythonAsync(`
+import micropip
+await micropip.install("${clean}")
+`);
+        }
+      } else {
+        await pyodide.runPythonAsync(`
+import micropip
+await micropip.install("${clean}")
+`);
+      }
+    }
+
+    // 3. Verify package import and retrieve version
+    let version = 'đã cài đặt';
+    try {
+      const verResult = await pyodide.runPythonAsync(`
+import importlib.metadata
+try:
+    _v = importlib.metadata.version("${clean}")
+except Exception:
+    try:
+        _mod = __import__("${clean.replace(/-/g, '_')}")
+        _v = getattr(_mod, '__version__', 'sẵn sàng')
+    except Exception:
+        _v = 'sẵn sàng'
+_v
+`);
+      if (verResult) {
+        version = String(verResult);
+      }
+    } catch (_) {}
+
+    return {
+      success: true,
+      version,
+      output: `✅ Đã cài đặt thành công thư viện [${clean}] (${version}) vào bộ nhân Python Pyodide trên thiết bị Android!`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      output: `❌ Không thể cài đặt [${clean}] trên thiết bị: ${err?.message || String(err)}`,
+    };
+  }
+}
+
+/**
+ * Uninstall / unload a Python package from Pyodide
+ */
+export async function uninstallPackageInPyodide(
+  pkgName: string
+): Promise<{ success: boolean; output: string }> {
+  const clean = pkgName.trim();
+  if (!clean) {
+    return { success: false, output: 'Tên gói thư viện không hợp lệ.' };
+  }
+
+  try {
+    const pyodide = typeof window !== 'undefined' ? (window as any).pyodideInstance : null;
+    if (pyodide) {
+      const modName = clean.replace(/-/g, '_');
+      await pyodide.runPythonAsync(`
+import sys
+for k in list(sys.modules.keys()):
+    if k == "${modName}" or k.startswith("${modName}."):
+        del sys.modules[k]
+`);
+    }
+    return {
+      success: true,
+      output: `✅ Đã gỡ bỏ thư viện [${clean}] khỏi bộ nhớ thiết bị thành công!`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      output: `❌ Lỗi khi gỡ bỏ [${clean}]: ${err?.message || String(err)}`,
+    };
+  }
+}
+

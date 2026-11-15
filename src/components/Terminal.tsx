@@ -82,58 +82,15 @@ export const Terminal: React.FC<TerminalProps> = ({
     }
   }, [aiDebugResult, isAiDebugging]);
 
-  // 📱 Tự động cuộn đáy và đưa ô nhập input() lên ngay trên bàn phím ảo điện thoại
-  useEffect(() => {
-    const scrollToLatest = () => {
-      if (scrollContainerRef.current) {
-        scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
-      }
-      if (isInputFocused && inputRef.current) {
-        inputRef.current.scrollIntoView({ block: 'nearest' });
-      }
-    };
-
-    const container = scrollContainerRef.current;
-    let prevHeight = container?.clientHeight ?? 0;
-    const resizeObserver =
-      container && typeof ResizeObserver !== 'undefined'
-        ? new ResizeObserver(() => {
-            const nextHeight = container.clientHeight;
-            if (nextHeight > 0 && nextHeight !== prevHeight) {
-              const shrunk = nextHeight < prevHeight - 10;
-              prevHeight = nextHeight;
-              if (shrunk || isInputFocused) {
-                requestAnimationFrame(scrollToLatest);
-              }
-            }
-          })
-        : null;
-
-    if (container && resizeObserver) {
-      resizeObserver.observe(container);
-    }
-
-    window.addEventListener('resize', scrollToLatest);
-    if (typeof window !== 'undefined' && window.visualViewport) {
-      window.visualViewport.addEventListener('resize', scrollToLatest);
-      window.visualViewport.addEventListener('scroll', scrollToLatest);
-    }
-
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener('resize', scrollToLatest);
-      if (typeof window !== 'undefined' && window.visualViewport) {
-        window.visualViewport.removeEventListener('resize', scrollToLatest);
-        window.visualViewport.removeEventListener('scroll', scrollToLatest);
-      }
-    };
-  }, [isInputFocused]);
+  const isComposingRef = useRef(false);
 
   const handleSend = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!currentInput && !isRunning) return;
+    isComposingRef.current = false;
+    const liveValue = inputRef.current ? inputRef.current.value : currentInput;
+    if (!liveValue && !isRunning) return;
 
-    onSendStdin(currentInput);
+    onSendStdin(liveValue);
     setCurrentInput('');
   };
 
@@ -141,18 +98,6 @@ export const Terminal: React.FC<TerminalProps> = ({
   const visibleEntries = entries.filter((e) => {
     const text = e.text || '';
     const lower = text.toLowerCase().trim();
-
-    // 0. Always preserve diagnostic test logs
-    if (
-      lower.includes('gemini') ||
-      lower.includes('chẩn đoán') ||
-      lower.includes('diagnostic') ||
-      lower.includes('pydroid 3 -') ||
-      lower.includes('[bước') ||
-      lower.includes('báo cáo')
-    ) {
-      return true;
-    }
 
     // 1. Filter out Python internal path / standard library install diagnostics
     if (
@@ -259,7 +204,7 @@ export const Terminal: React.FC<TerminalProps> = ({
   };
 
   return (
-    <div className="flex-1 min-h-0 w-full h-full flex flex-col bg-[#0b0c13] text-[#f8fafc] overflow-hidden font-mono select-text">
+    <div className="flex-1 w-full h-full flex flex-col bg-[#0b0c13] text-[#f8fafc] overflow-hidden font-mono select-text">
       {/* Terminal Slim Header: Tối ưu không gian để vùng hiển thị Terminal lớn nhất */}
       <div className="h-8 bg-[#13141f] border-b border-[#232435] px-3 flex items-center justify-between text-xs shrink-0 select-none">
         <div className="flex items-center space-x-2">
@@ -324,20 +269,6 @@ export const Terminal: React.FC<TerminalProps> = ({
               <span>Dừng</span>
             </button>
           )}
-
-          {/* AI Diagnostic Button */}
-          <button
-            onClick={() => {
-              if (typeof window !== 'undefined') {
-                window.dispatchEvent(new CustomEvent('pydroid:run-gemini-diagnostic'));
-              }
-            }}
-            className="flex items-center space-x-1 px-2 py-0.5 bg-[#1f202e] hover:bg-[#2b2c40] text-amber-300 hover:text-amber-200 rounded border border-[#313248] text-xs transition cursor-pointer"
-            title="Kiểm tra kết nối và xác thực toàn diện Gemini API"
-          >
-            <Sparkles className="w-3 h-3 text-amber-400" />
-            <span className="hidden sm:inline">Chẩn đoán AI</span>
-          </button>
 
           {/* Clear Button */}
           <button
@@ -410,11 +341,15 @@ export const Terminal: React.FC<TerminalProps> = ({
             </button>
           </div>
           <textarea
+            lang="vi"
             value={stdinPreset}
             onChange={(e) => setStdinPreset(e.target.value)}
             placeholder="Ví dụ:&#10;Nguyễn Văn An&#10;25&#10;1.75"
             rows={3}
-            className="w-full bg-[#0f1018] border border-[#33344a] rounded p-2 text-xs font-mono text-[#f8fafc] focus:outline-none focus:border-amber-400 transition"
+            spellCheck={false}
+            autoCapitalize="none"
+            inputMode="text"
+            className="w-full bg-[#0f1018] border border-[#33344a] rounded p-2 text-xs font-mono text-[#f8fafc] focus:outline-none focus:border-amber-400 transition select-text"
           />
         </div>
       )}
@@ -422,7 +357,7 @@ export const Terminal: React.FC<TerminalProps> = ({
       {/* 🚀 Output Stream Canvas: Bắt đầu ngay dòng trên cùng, chữ sáng rõ nét */}
       <div
         ref={scrollContainerRef}
-        className="flex-1 min-h-0 px-3 pt-1 pb-3 sm:px-4 sm:pt-1 sm:pb-4 overflow-y-auto overflow-x-auto ide-scroll-y text-sm leading-relaxed space-y-1 font-mono selection:bg-amber-400 selection:text-black"
+        className="flex-1 px-3 pt-1 pb-3 sm:px-4 sm:pt-1 sm:pb-4 overflow-y-auto overflow-x-auto text-sm leading-relaxed space-y-1 font-mono selection:bg-amber-400 selection:text-black"
       >
         {visibleEntries.length === 0 && !executionResult ? (
           <div className="text-gray-400 italic pt-1 select-none font-sans text-xs">
@@ -692,7 +627,7 @@ export const Terminal: React.FC<TerminalProps> = ({
 
       {/* Interactive Bottom Input Bar (Glowing Amber when awaiting input) */}
       <div
-        className={`shrink-0 p-2 bg-[#12131d] border-t transition-all ${
+        className={`p-2 bg-[#12131d] border-t transition-all ${
           isRunning
             ? 'border-amber-400/90 shadow-[0_-3px_15px_rgba(251,191,36,0.2)] ring-1 ring-amber-400/50'
             : 'border-[#262738]'
@@ -704,28 +639,47 @@ export const Terminal: React.FC<TerminalProps> = ({
           </div>
           <input
             ref={inputRef}
+            lang="vi"
             type="text"
             value={currentInput}
-            onChange={(e) => setCurrentInput(e.target.value)}
-            onFocus={() => {
-              setIsInputFocused(true);
-              const syncBottom = () => {
-                if (scrollContainerRef.current) {
-                  scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
-                }
-                inputRef.current?.scrollIntoView({ block: 'nearest' });
-              };
-              requestAnimationFrame(syncBottom);
-              setTimeout(syncBottom, 160);
-              setTimeout(syncBottom, 360);
+            onChange={(e) => {
+              setCurrentInput(e.target.value);
             }}
-            onBlur={() => setIsInputFocused(false)}
+            onFocus={() => setIsInputFocused(true)}
+            onBlur={() => {
+              isComposingRef.current = false;
+              setIsInputFocused(false);
+            }}
+            onCompositionStart={() => {
+              isComposingRef.current = true;
+            }}
+            onCompositionEnd={(e) => {
+              isComposingRef.current = false;
+              setCurrentInput(e.currentTarget.value);
+            }}
+            onKeyDown={(e) => {
+              if (
+                e.key === 'Enter' &&
+                (e.nativeEvent.isComposing || isComposingRef.current || e.keyCode === 229)
+              ) {
+                e.preventDefault();
+              }
+            }}
+            spellCheck={false}
+            autoCapitalize="none"
+            autoCorrect="on"
+            autoComplete="on"
+            inputMode="text"
             placeholder={
               isRunning
                 ? 'Nhập dữ liệu cho input() rồi bấm Gửi (hoặc Enter)...'
                 : 'Nhập lệnh hoặc tham số vào đây...'
             }
-            className="flex-1 bg-[#181926] text-[#fef08a] text-sm px-3.5 py-2 rounded-lg border border-[#34354c] focus:outline-none focus:border-amber-400 font-mono transition"
+            className="flex-1 bg-[#181926] text-[#fef08a] text-sm px-3.5 py-2 rounded-lg border border-[#34354c] focus:outline-none focus:border-amber-400 font-mono transition select-text"
+            style={{
+              userSelect: 'text',
+              WebkitUserSelect: 'text',
+            }}
           />
           <button
             type="submit"
