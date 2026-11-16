@@ -161,7 +161,7 @@ export default function App() {
   const [isStudyOpen, setIsStudyOpen] = useState(false);
   const [isColorPickerOpen, setIsColorPickerOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsFocusSection, setSettingsFocusSection] = useState<'google-account' | null>(null);
+  const [settingsFocusSection, setSettingsFocusSection] = useState<'google-account' | 'gemini-ai' | 'server-gateway' | null>(null);
   const [isFileManagerOpen, setIsFileManagerOpen] = useState(false);
   const [isConfirmClearOpen, setIsConfirmClearOpen] = useState(false);
   const [isExportApkOpen, setIsExportApkOpen] = useState(false);
@@ -956,9 +956,8 @@ export default function App() {
           setActiveTab('editor');
           showToast('Đã áp dụng mã từ Trợ lý AI vào Editor!');
         }}
-        googleUser={googleUser}
         onOpenSettings={() => {
-          setSettingsFocusSection('google-account');
+          setSettingsFocusSection('gemini-ai');
           setIsSettingsOpen(true);
         }}
       />

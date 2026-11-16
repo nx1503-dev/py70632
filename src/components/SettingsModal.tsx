@@ -46,6 +46,7 @@ import {
   testServerAiStatus,
   isAndroidApkEnvironment,
   DEFAULT_CLOUD_API_URL,
+  RENDER_CLOUD_API_URL,
 } from '../utils/apiConfig';
 import { GoogleSignInButton } from './GoogleSignInButton';
 
@@ -74,7 +75,7 @@ interface SettingsModalProps {
   onOpenColorPicker?: () => void;
   onOpenExportApk?: () => void;
   customColors?: SyntaxColors;
-  focusSection?: 'google-account' | null;
+  focusSection?: 'google-account' | 'gemini-ai' | 'server-gateway' | null;
   googleUser?: FirebaseUser | null;
   googleAccessToken?: string | null;
   needsGoogleAuth?: boolean;
@@ -176,6 +177,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   } | null>(null);
   const [pendingUninstallPkg, setPendingUninstallPkg] = useState<string | null>(null);
   const googleSectionRef = useRef<HTMLDivElement>(null);
+  const geminiSectionRef = useRef<HTMLDivElement>(null);
+  const serverSectionRef = useRef<HTMLDivElement>(null);
 
   // Fetch installed packages
   const fetchInstalledPackages = async () => {
@@ -355,6 +358,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       if (focusSection === 'google-account') {
         setTimeout(() => {
           googleSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 120);
+      } else if (focusSection === 'gemini-ai') {
+        setTimeout(() => {
+          geminiSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 120);
+      } else if (focusSection === 'server-gateway') {
+        setTimeout(() => {
+          serverSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 120);
       }
     }
@@ -611,194 +622,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           )}
 
-          {/* 7. Cổng API & Máy chủ Trợ lý AI (APK nhập Cloud Gateway, Web dùng trực tiếp máy chủ nội bộ) */}
-          <div className="p-2.5 rounded-xl bg-[#141420] border border-[#262538] space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-gray-200 flex items-center space-x-1.5 text-xs">
-                <Globe className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                <span>1. Cổng Máy chủ Cloud (Server Gateway)</span>
-              </span>
-              <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${
-                isAndroidApkEnvironment()
-                  ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
-                  : 'bg-cyan-500/10 border-cyan-500/40 text-cyan-300'
-              }`}>
-                {isAndroidApkEnvironment() ? '📱 Môi trường APK' : '🌐 Máy chủ AI Studio / Web'}
-              </span>
-            </div>
-
-            {isAndroidApkEnvironment() ? (
-              <>
-                <p className="text-[10px] text-gray-400 leading-tight">
-                  Cổng máy chủ để kết nối: <strong className="text-gray-200">Trợ lý AI Gemini</strong>, <strong className="text-gray-200">CPython Native</strong> và <strong className="text-gray-200">Pip Package Manager</strong>.
-                </p>
-
-                <div className="space-y-1.5">
-                  <div className="flex items-center space-x-1.5">
-                    <input
-                      type="text"
-                      value={apiGatewayUrl}
-                      onChange={(e) => {
-                        setApiGatewayUrl(e.target.value);
-                        setApiTestResult(null);
-                        setApiSaveSuccess(false);
-                      }}
-                      placeholder="https://ten-may-chu-cua-ban.onrender.com"
-                      className="flex-1 px-2.5 py-1.5 bg-[#0e0e18] border border-[#2b2a40] focus:border-cyan-400 rounded-lg text-xs font-mono text-gray-200 placeholder-gray-500 outline-none transition"
-                    />
-                    <button
-                      type="button"
-                      disabled={isTestingApi}
-                      onClick={async () => {
-                        setIsTestingApi(true);
-                        setApiTestResult(null);
-                        const res = await testApiGatewayConnection(apiGatewayUrl);
-                        setApiTestResult(res);
-                        if (res.ok && apiGatewayUrl.trim()) {
-                          setApiBaseUrl(apiGatewayUrl);
-                          setApiSaveSuccess(true);
-                          setTimeout(() => setApiSaveSuccess(false), 2500);
-                          setIsTestingAiServer(true);
-                          const aiRes = await testServerAiStatus(apiGatewayUrl);
-                          setAiServerStatus(aiRes);
-                          setIsTestingAiServer(false);
-                        }
-                        setIsTestingApi(false);
-                      }}
-                      className="px-2.5 py-1.5 bg-cyan-600 hover:bg-cyan-500 active:scale-95 disabled:opacity-50 text-white font-bold rounded-lg text-xs flex items-center space-x-1 transition cursor-pointer shrink-0"
-                    >
-                      <Wifi className={`w-3 h-3 ${isTestingApi ? 'animate-pulse' : ''}`} />
-                      <span>{isTestingApi ? 'Đang thử...' : 'Kiểm tra'}</span>
-                    </button>
-                  </div>
-
-                  {/* Action buttons: Reset to Local, Save */}
-                  <div className="flex items-center justify-between text-[11px] pt-0.5 flex-wrap gap-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setApiGatewayUrl('');
-                        setApiBaseUrl('');
-                        setApiTestResult(null);
-                        setApiSaveSuccess(true);
-                        setTimeout(() => setApiSaveSuccess(false), 2500);
-                      }}
-                      className="text-cyan-400 hover:text-cyan-300 flex items-center space-x-1 cursor-pointer transition text-[10px]"
-                      title="Dùng cổng nội bộ (khi chạy ngoại tuyến Pyodide)"
-                    >
-                      <RotateCcw className="w-2.5 h-2.5" />
-                      <span>Xóa Cổng Cloud (Dùng ngoại tuyến)</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setApiBaseUrl(apiGatewayUrl);
-                        setApiSaveSuccess(true);
-                        setTimeout(() => setApiSaveSuccess(false), 2500);
-                      }}
-                      className={`px-2.5 py-0.5 rounded font-bold transition flex items-center space-x-1 text-[11px] cursor-pointer ${
-                        apiSaveSuccess
-                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50'
-                          : 'bg-[#1e1d30] hover:bg-[#282740] text-gray-200 border border-[#353450]'
-                      }`}
-                    >
-                      {apiSaveSuccess ? (
-                        <>
-                          <Check className="w-3 h-3 text-emerald-400" />
-                          <span>Đã lưu!</span>
-                        </>
-                      ) : (
-                        <span>Lưu Cổng Máy chủ</span>
-                      )}
-                    </button>
-                  </div>
-
-                  {apiTestResult && (
-                    <div
-                      className={`p-2 rounded-lg text-[10px] flex items-start space-x-2 border transition ${
-                        apiTestResult.ok
-                          ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
-                          : 'bg-rose-950/40 border-rose-500/40 text-rose-300'
-                      }`}
-                    >
-                      {apiTestResult.ok ? (
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                      ) : (
-                        <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
-                      )}
-                      <div className="flex-1 leading-tight">
-                        <div className="font-semibold flex items-center space-x-1.5">
-                          <span>{apiTestResult.message}</span>
-                          <span className="font-mono text-[9px] px-1 py-0.2 rounded bg-black/40">
-                            ⚡ {apiTestResult.latencyMs}ms
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="space-y-1.5">
-                <p className="text-[10px] text-gray-300 leading-relaxed">
-                  Phiên bản Web / AI Studio đang kết nối trực tiếp tới máy chủ nội bộ (<code className="text-cyan-300">/api/*</code>) của phiên hiện tại — không cần nhập URL bên ngoài.
-                </p>
-                <div className="flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    disabled={isTestingApi}
-                    onClick={async () => {
-                      setIsTestingApi(true);
-                      setApiTestResult(null);
-                      const res = await testApiGatewayConnection('');
-                      setApiTestResult(res);
-                      setIsTestingAiServer(true);
-                      const aiRes = await testServerAiStatus();
-                      setAiServerStatus(aiRes);
-                      setIsTestingAiServer(false);
-                      setIsTestingApi(false);
-                    }}
-                    className="px-2.5 py-1.5 bg-cyan-600 hover:bg-cyan-500 active:scale-95 disabled:opacity-50 text-white font-bold rounded-lg text-xs flex items-center space-x-1 transition cursor-pointer shrink-0"
-                  >
-                    <Wifi className={`w-3 h-3 ${isTestingApi ? 'animate-pulse' : ''}`} />
-                    <span>{isTestingApi ? 'Đang kiểm tra...' : 'Kiểm tra máy chủ nội bộ'}</span>
-                  </button>
-                  {apiTestResult && (
-                    <span className={`text-[10px] font-mono ${apiTestResult.ok ? 'text-emerald-300' : 'text-rose-300'}`}>
-                      {apiTestResult.ok ? `✓ Sẵn sàng (${apiTestResult.latencyMs}ms)` : apiTestResult.message}
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* 8. Tài khoản Google, Google Drive & Dịch vụ Gemini AI */}
+          {/* 1. Tài khoản Google & Google Drive (Tách biệt hoàn toàn khỏi Gemini AI) */}
           <div ref={googleSectionRef} className="p-2.5 rounded-xl bg-[#141420] border border-[#262538] space-y-2.5">
             <div className="flex items-center justify-between gap-2">
               <span className="font-semibold text-gray-200 flex items-center space-x-1.5 text-xs">
                 <Cloud className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                <span>2. Tài khoản Google, Google Drive &amp; Gemini AI</span>
+                <span>1. Tài khoản Google</span>
               </span>
               <span
                 className={`text-[9px] font-bold px-2 py-0.5 rounded border shrink-0 ${
-                  googleUser && googleAccessToken
+                  googleUser
                     ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
-                    : googleUser
-                    ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
                     : 'bg-gray-800/80 border-gray-700 text-gray-300'
                 }`}
               >
-                {googleUser && googleAccessToken
-                  ? 'Đã kết nối Google'
-                  : googleUser
-                  ? 'Cần xác thực lại'
-                  : 'Chưa đăng nhập'}
+                {googleUser ? 'Đã đăng nhập' : 'Chưa đăng nhập'}
               </span>
             </div>
 
-            {/* Google Account Card */}
             <div className="p-2.5 rounded-lg bg-[#0e0e18] border border-[#2b2a40] space-y-2.5">
               {googleUser ? (
                 <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -849,11 +690,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                 </div>
               ) : (
-                <div className="space-y-2">
-                  <p className="text-[11px] text-gray-300 leading-relaxed">
-                    Đăng nhập bằng <strong className="text-white">Tài khoản Google</strong> để lưu và đồng bộ tệp mã nguồn <code className="text-sky-300">.py</code> lên Google Drive, đồng thời sẵn sàng mở rộng kết nối các dịch vụ Google Workspace khác.
-                  </p>
-                </div>
+                <p className="text-[11px] text-gray-300 leading-relaxed">
+                  Đăng nhập bằng <strong className="text-white">Tài khoản Google</strong> để lưu, mở và đồng bộ tệp mã nguồn <code className="text-sky-300">.py</code> trên Google Drive (hoạt động độc lập với Trợ lý AI).
+                </p>
               )}
 
               {(!googleAccessToken || needsGoogleAuth || !googleUser) && onGoogleSignIn && (
@@ -861,12 +700,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <GoogleSignInButton
                     onClick={onGoogleSignIn}
                     isLoading={isGoogleSigningIn}
-                    label={googleUser ? 'Kết nối lại Google Drive' : 'Đăng nhập bằng Google'}
+                    label={googleUser ? 'Cấp lại quyền Google Drive' : 'Đăng nhập bằng Google'}
                     compact
                   />
                   {googleUser && !googleAccessToken && (
                     <span className="text-[10px] text-amber-300">
-                      Phiên truy cập tạm thời đã làm mới — bấm để cấp lại quyền Drive.
+                      Đã đăng nhập tài khoản — bấm để kết nối lại quyền đọc/ghi Drive.
                     </span>
                   )}
                 </div>
@@ -882,58 +721,35 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {isAndroidApkEnvironment() && (!googleUser || !googleAccessToken) && (
                 <div className="p-2.5 rounded-lg bg-sky-950/30 border border-sky-500/30 text-[10px] text-sky-200 space-y-2">
                   <p className="leading-relaxed text-gray-300">
-                    <strong className="text-sky-300">Mẹo cho người dùng APK:</strong> Google OAuth chặn đăng nhập trực tiếp trong Android WebView (<code className="text-amber-300">disallowed_useragent</code>) và tên miền <code className="text-amber-300">localhost</code> chưa nằm trong Firebase Auth. Bạn có thể mở bản Web bằng <strong>Chrome</strong> để đăng nhập Google &amp; đồng bộ Drive:
+                    <strong className="text-sky-300">Mẹo cho người dùng APK:</strong> Android WebView chặn cửa sổ đăng nhập Google (<code className="text-amber-300">disallowed_useragent</code>). Bạn có thể mở bản Web bằng <strong>Chrome</strong> để đăng nhập Google và đồng bộ Drive bình thường:
                   </p>
                   <div className="flex flex-wrap items-center gap-1.5">
                     <a
-                      href={DEFAULT_CLOUD_API_URL}
+                      href={
+                        apiGatewayUrl.trim().startsWith('http')
+                          ? apiGatewayUrl.trim().replace(/\/+$/, '')
+                          : RENDER_CLOUD_API_URL
+                      }
                       target="_blank"
                       rel="noopener noreferrer"
                       className="px-2.5 py-1.5 bg-sky-500/20 hover:bg-sky-500/30 text-sky-200 border border-sky-400/50 rounded-lg font-bold flex items-center space-x-1 transition"
                     >
                       <ExternalLink className="w-3 h-3" />
-                      <span>Mở bản AI Studio Web trên Chrome</span>
+                      <span>Mở bản Render Web trên Chrome</span>
                     </a>
-                    {apiGatewayUrl.trim().startsWith('http') &&
-                      apiGatewayUrl.trim().replace(/\/+$/, '') !== DEFAULT_CLOUD_API_URL && (
-                        <>
-                          <a
-                            href={apiGatewayUrl.trim().replace(/\/+$/, '')}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="px-2.5 py-1.5 bg-[#1b1a2e] hover:bg-[#262540] text-gray-200 border border-[#3a385c] rounded-lg font-semibold flex items-center space-x-1 transition"
-                          >
-                            <ExternalLink className="w-3 h-3 text-cyan-300" />
-                            <span>Mở Render trên Chrome</span>
-                          </a>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              try {
-                                const host = new URL(apiGatewayUrl.trim()).hostname;
-                                navigator.clipboard?.writeText(host);
-                                setApiSaveSuccess(true);
-                                setTimeout(() => setApiSaveSuccess(false), 2000);
-                              } catch (_) {}
-                            }}
-                            className="px-2.5 py-1.5 bg-[#1b1a2e] hover:bg-[#262540] text-gray-200 border border-[#3a385c] rounded-lg font-semibold flex items-center space-x-1 cursor-pointer transition"
-                          >
-                            <Copy className="w-3 h-3 text-amber-300" />
-                            <span>Sao chép tên miền Render cho Firebase</span>
-                          </button>
-                        </>
-                      )}
+                    <a
+                      href={DEFAULT_CLOUD_API_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2.5 py-1.5 bg-[#1b1a2e] hover:bg-[#262540] text-gray-200 border border-[#3a385c] rounded-lg font-semibold flex items-center space-x-1 transition"
+                    >
+                      <ExternalLink className="w-3 h-3 text-cyan-300" />
+                      <span>Mở bản AI Studio trên Chrome</span>
+                    </a>
                   </div>
-                  {apiGatewayUrl.trim().startsWith('http') &&
-                    apiGatewayUrl.trim().replace(/\/+$/, '') !== DEFAULT_CLOUD_API_URL && (
-                      <p className="text-[9.5px] text-amber-200/90 leading-snug">
-                        Lưu ý: Nếu đăng nhập Google trên URL Render riêng, hãy vào <strong>Firebase Console &gt; Authentication &gt; Settings &gt; Authorized domains</strong> và thêm tên miền Render ở trên.
-                      </p>
-                    )}
                 </div>
               )}
 
-              {/* Dịch vụ Google hỗ trợ & Định hướng mở rộng */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1 border-t border-[#222136]">
                 <div className="p-2 rounded-lg bg-[#141422] border border-[#25243b] flex items-center justify-between">
                   <div className="flex items-center space-x-1.5">
@@ -950,7 +766,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         : 'bg-gray-800 text-gray-400'
                     }`}
                   >
-                    {googleAccessToken ? 'Sẵn sàng' : 'Chờ đăng nhập'}
+                    {googleAccessToken ? 'Sẵn sàng' : 'Chờ cấp quyền'}
                   </span>
                 </div>
 
@@ -958,28 +774,45 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="flex items-center space-x-1.5">
                     <ServicesIcon className="w-3.5 h-3.5 text-purple-400 shrink-0" />
                     <div>
-                      <div className="text-[11px] font-semibold text-gray-200">Hệ sinh thái mở rộng</div>
-                      <div className="text-[9px] text-gray-400">Sheets, Docs, Classroom</div>
+                      <div className="text-[11px] font-semibold text-gray-200">Hồ sơ Google</div>
+                      <div className="text-[9px] text-gray-400">Đăng nhập tiêu chuẩn</div>
                     </div>
                   </div>
-                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300">
-                    Sắp ra mắt
+                  <span
+                    className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                      googleUser
+                        ? 'bg-emerald-500/15 text-emerald-300'
+                        : 'bg-gray-800 text-gray-400'
+                    }`}
+                  >
+                    {googleUser ? 'Đã liên kết' : 'Chưa liên kết'}
                   </span>
                 </div>
               </div>
             </div>
+          </div>
 
-            {/* Server-side Gemini AI Live Health Check */}
+          {/* 2. Trợ lý Gemini AI (Hoạt động độc lập với Tài khoản Google) */}
+          <div ref={geminiSectionRef} className="p-2.5 rounded-xl bg-[#141420] border border-[#262538] space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-semibold text-gray-200 flex items-center space-x-1.5 text-xs">
+                <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <span>2. Trợ lý Gemini AI</span>
+              </span>
+              <span className="text-[9px] font-bold px-2 py-0.5 rounded border bg-amber-500/10 border-amber-500/35 text-amber-300 shrink-0">
+                Độc lập với Google Auth
+              </span>
+            </div>
+
             <div className="p-2.5 rounded-lg bg-[#0e0e18] border border-[#2b2a40] flex items-center justify-between gap-2">
               <div className="flex items-center space-x-2 min-w-0">
                 <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
                 <div className="min-w-0">
-                  <div className="text-[11px] text-gray-200 font-medium flex items-center space-x-1">
-                    <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />
-                    <span>Trợ lý Google Gemini 3.8 Flash &amp; Live API</span>
+                  <div className="text-[11px] text-gray-200 font-medium">
+                    Google Gemini Flash &amp; Live API
                   </div>
                   <div className="text-[9px] text-emerald-400 font-mono truncate">
-                    Xử lý tự động phía máy chủ • Dự phòng PEP 8 ngoại tuyến
+                    Gọi qua máy chủ (/api/ai/*) • Dự phòng PEP 8 ngoại tuyến
                   </div>
                 </div>
               </div>
@@ -989,9 +822,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onClick={async () => {
                   setIsTestingAiServer(true);
                   setAiServerStatus(null);
-                  const res = await testServerAiStatus(
-                    isAndroidApkEnvironment() ? (apiGatewayUrl.trim() || undefined) : undefined
-                  );
+                  const res = await testServerAiStatus(apiGatewayUrl.trim() || undefined);
                   setAiServerStatus(res);
                   setIsTestingAiServer(false);
                 }}
@@ -1021,7 +852,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <div className="text-[9.5px] font-mono text-amber-200/90 bg-black/30 px-2 py-1 rounded border border-rose-500/30">
                       {aiServerStatus.diagnostic.keyPresent
                         ? `Máy chủ đã nhận ${aiServerStatus.diagnostic.keySource} (${aiServerStatus.diagnostic.geminiKeyLen || 0} ký tự), nhưng Google trả về HTTP ${aiServerStatus.diagnostic.httpStatus ?? 'lỗi'}: khóa hiện tại bị từ chối (API_KEY_INVALID).`
-                        : 'Máy chủ chưa có biến môi trường GEMINI_API_KEY.'}
+                        : 'Máy chủ đang chọn chưa có biến môi trường GEMINI_API_KEY.'}
                     </div>
                   )}
                   <p className={`text-[10px] ${aiServerStatus.ok ? 'text-emerald-400/80' : 'text-rose-300/80'}`}>
@@ -1031,16 +862,150 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             )}
 
-            <div className="p-2 rounded-lg bg-[#0e0e16] border border-[#222135] text-[10px] text-gray-400 space-y-1">
-              <div className="font-semibold text-gray-300 flex items-center space-x-1">
-                <span>ℹ️ Kiến trúc kết nối &amp; Hướng dẫn thiết lập:</span>
+            <div className="p-2 rounded-lg bg-[#0e0e16] border border-[#222135] text-[10px] text-gray-400 leading-relaxed">
+              <strong className="text-gray-200">Cấu hình khóa Gemini phía máy chủ:</strong> Ứng dụng không hiển thị ô nhập khóa API trên giao diện trình duyệt. Hãy đặt biến <code className="text-amber-300">GEMINI_API_KEY</code> trong <strong className="text-gray-200">Settings &gt; Secrets</strong> (AI Studio) hoặc <strong className="text-gray-200">Environment Variables</strong> (Render). Khi chưa có khóa hợp lệ, bộ phân tích PEP 8 nội bộ luôn hoạt động tự động.
+            </div>
+          </div>
+
+          {/* 3. Cổng Máy chủ Cloud (Tùy chọn - Hoạt động cho cả Web & APK) */}
+          <div ref={serverSectionRef} className="p-2.5 rounded-xl bg-[#141420] border border-[#262538] space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-semibold text-gray-200 flex items-center space-x-1.5 text-xs">
+                <Globe className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                <span>3. Cổng Máy chủ Cloud (Tùy chọn)</span>
+              </span>
+              <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border shrink-0 ${
+                isAndroidApkEnvironment()
+                  ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
+                  : 'bg-cyan-500/10 border-cyan-500/40 text-cyan-300'
+              }`}>
+                {isAndroidApkEnvironment() ? '📱 Môi trường APK' : '🌐 Môi trường Web'}
+              </span>
+            </div>
+
+            <p className="text-[10px] text-gray-400 leading-tight">
+              {isAndroidApkEnvironment()
+                ? 'Chọn máy chủ Cloud cho Trợ lý AI Gemini, CPython Native và Pip trên APK (mặc định: py70632.onrender.com), hoặc chuyển sang chế độ ngoại tuyến Pyodide.'
+                : 'Để trống để dùng máy chủ nội bộ (/api/*), hoặc nhập URL máy chủ tùy chọn (ví dụ https://py70632.onrender.com) nếu muốn định tuyến sang backend riêng.'}
+            </p>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center space-x-1.5">
+                <input
+                  type="text"
+                  value={apiGatewayUrl}
+                  onChange={(e) => {
+                    setApiGatewayUrl(e.target.value);
+                    setApiTestResult(null);
+                    setApiSaveSuccess(false);
+                  }}
+                  placeholder={isAndroidApkEnvironment() ? RENDER_CLOUD_API_URL : 'Mặc định: máy chủ nội bộ (/api/*)'}
+                  className="flex-1 px-2.5 py-1.5 bg-[#0e0e18] border border-[#2b2a40] focus:border-cyan-400 rounded-lg text-xs font-mono text-gray-200 placeholder-gray-500 outline-none transition"
+                />
+                <button
+                  type="button"
+                  disabled={isTestingApi}
+                  onClick={async () => {
+                    setIsTestingApi(true);
+                    setApiTestResult(null);
+                    const res = await testApiGatewayConnection(apiGatewayUrl);
+                    setApiTestResult(res);
+                    if (res.ok && apiGatewayUrl.trim()) {
+                      setApiBaseUrl(apiGatewayUrl);
+                      setApiSaveSuccess(true);
+                      setTimeout(() => setApiSaveSuccess(false), 2500);
+                    }
+                    setIsTestingApi(false);
+                  }}
+                  className="px-2.5 py-1.5 bg-cyan-600 hover:bg-cyan-500 active:scale-95 disabled:opacity-50 text-white font-bold rounded-lg text-xs flex items-center space-x-1 transition cursor-pointer shrink-0"
+                >
+                  <Wifi className={`w-3 h-3 ${isTestingApi ? 'animate-pulse' : ''}`} />
+                  <span>{isTestingApi ? 'Đang thử...' : 'Kiểm tra'}</span>
+                </button>
               </div>
-              <p>
-                • <strong>Đăng nhập Google &amp; Drive:</strong> Hoạt động trên bản Web / Chrome PWA (các tên miền ngoài AI Studio như <code className="text-sky-300">*.onrender.com</code> cần được thêm vào <em>Firebase Console &gt; Authentication &gt; Authorized domains</em>).
-              </p>
-              <p>
-                • <strong>Kết nối Gemini AI (Không dùng cổng nhập khóa trong app):</strong> Cấu hình biến <code className="text-amber-300">GEMINI_API_KEY</code> ở máy chủ (<strong className="text-gray-200">Settings &gt; Secrets</strong> trên AI Studio hoặc <strong className="text-gray-200">Environment Variables</strong> trên Render). Khi chưa có khóa hợp lệ hoặc ngoại tuyến, bộ phân tích PEP 8 nội bộ luôn hoạt động tự động.
-              </p>
+
+              <div className="flex items-center justify-between text-[11px] pt-0.5 flex-wrap gap-1.5">
+                <div className="flex items-center space-x-2.5 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setApiGatewayUrl(RENDER_CLOUD_API_URL);
+                      setApiBaseUrl(RENDER_CLOUD_API_URL);
+                      setApiTestResult(null);
+                      setApiSaveSuccess(true);
+                      setTimeout(() => setApiSaveSuccess(false), 2500);
+                    }}
+                    className="text-emerald-400 hover:text-emerald-300 flex items-center space-x-1 cursor-pointer transition text-[10px]"
+                    title={`Chọn máy chủ ${RENDER_CLOUD_API_URL}`}
+                  >
+                    <Globe className="w-2.5 h-2.5" />
+                    <span>Chọn py70632.onrender.com</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setApiGatewayUrl('');
+                      setApiBaseUrl('');
+                      setApiTestResult(null);
+                      setApiSaveSuccess(true);
+                      setTimeout(() => setApiSaveSuccess(false), 2500);
+                    }}
+                    className="text-cyan-400 hover:text-cyan-300 flex items-center space-x-1 cursor-pointer transition text-[10px]"
+                    title={isAndroidApkEnvironment() ? 'Dùng ngoại tuyến Pyodide' : 'Khôi phục về máy chủ nội bộ (/api/*)'}
+                  >
+                    <RotateCcw className="w-2.5 h-2.5" />
+                    <span>{isAndroidApkEnvironment() ? 'Chế độ ngoại tuyến' : 'Mặc định nội bộ'}</span>
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setApiBaseUrl(apiGatewayUrl);
+                    setApiSaveSuccess(true);
+                    setTimeout(() => setApiSaveSuccess(false), 2500);
+                  }}
+                  className={`px-2.5 py-0.5 rounded font-bold transition flex items-center space-x-1 text-[11px] cursor-pointer ${
+                    apiSaveSuccess
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50'
+                      : 'bg-[#1e1d30] hover:bg-[#282740] text-gray-200 border border-[#353450]'
+                  }`}
+                >
+                  {apiSaveSuccess ? (
+                    <>
+                      <Check className="w-3 h-3 text-emerald-400" />
+                      <span>Đã lưu!</span>
+                    </>
+                  ) : (
+                    <span>Lưu Cổng Máy chủ</span>
+                  )}
+                </button>
+              </div>
+
+              {apiTestResult && (
+                <div
+                  className={`p-2 rounded-lg text-[10px] flex items-start space-x-2 border transition ${
+                    apiTestResult.ok
+                      ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+                      : 'bg-rose-950/40 border-rose-500/40 text-rose-300'
+                  }`}
+                >
+                  {apiTestResult.ok ? (
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
+                  )}
+                  <div className="flex-1 leading-tight">
+                    <div className="font-semibold flex items-center space-x-1.5">
+                      <span>{apiTestResult.message}</span>
+                      <span className="font-mono text-[9px] px-1 py-0.2 rounded bg-black/40">
+                        ⚡ {apiTestResult.latencyMs}ms
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

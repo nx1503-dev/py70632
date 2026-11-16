@@ -4,11 +4,13 @@
  * All Gemini AI calls are strictly managed server-side.
  */
 
-// Official Production/Cloud Run API Server Endpoints
+// Official Production/Cloud Run & Render API Server Endpoints
 export const DEFAULT_CLOUD_API_URL = 'https://ais-pre-g5w3wggai6dcyye22rmjnk-772838390153.asia-southeast1.run.app';
 export const DEV_CLOUD_API_URL = 'https://ais-dev-g5w3wggai6dcyye22rmjnk-772838390153.asia-southeast1.run.app';
+export const RENDER_CLOUD_API_URL = 'https://py70632.onrender.com';
 
 const STORAGE_GATEWAY_KEY = 'pydroid_api_gateway_url';
+const OFFLINE_MARKER = 'offline';
 
 /**
  * Checks if the current environment is running inside an Android APK (native Capacitor wrapper)
@@ -27,6 +29,7 @@ export function isAndroidApkEnvironment(): boolean {
     hostname.includes('aistudio.google.com') ||
     hostname.includes('google.com') ||
     hostname.includes('run.app') ||
+    hostname.includes('onrender.com') ||
     port === '3000' ||
     port === '5173'
   ) {
@@ -64,7 +67,7 @@ export function isAndroidApkEnvironment(): boolean {
 /**
  * Returns the active API Gateway Base URL.
  * - When in Web browser: returns empty string "" (relative paths /api/* work automatically)
- * - When in native Android APK or overridden by user: returns configured cloud URL
+ * - When in native Android APK: defaults to RENDER_CLOUD_API_URL (https://py70632.onrender.com) unless explicitly set offline or overridden
  */
 export function getApiBaseUrl(): string {
   if (typeof window === 'undefined') return '';
@@ -72,31 +75,59 @@ export function getApiBaseUrl(): string {
   const isApk = isAndroidApkEnvironment();
   const saved = localStorage.getItem(STORAGE_GATEWAY_KEY);
 
+  if (!isApk) {
+    if (saved && saved.trim()) {
+      const clean = saved.trim().replace(/\/+$/, '');
+      if (clean === OFFLINE_MARKER) {
+        try {
+          localStorage.removeItem(STORAGE_GATEWAY_KEY);
+        } catch (_) {}
+        return '';
+      }
+      // Clear stale/legacy preview or old Render domains if previously stored
+      if (
+        clean === 'https://tu70632.onrender.com' ||
+        clean.includes('ais-pre-') ||
+        clean.includes('ais-dev-')
+      ) {
+        try {
+          localStorage.removeItem(STORAGE_GATEWAY_KEY);
+        } catch (_) {}
+        return '';
+      }
+      if (clean.startsWith('http://') || clean.startsWith('https://')) {
+        // Avoid redirecting to the exact same origin
+        if (window.location.origin && clean === window.location.origin.replace(/\/+$/, '')) {
+          return '';
+        }
+        return clean;
+      }
+    }
+    return '';
+  }
+
   if (saved && saved.trim()) {
     const clean = saved.trim().replace(/\/+$/, '');
-    // When running inside AI Studio Web / Cloud Run preview, always use local relative /api/* backend
-    // so a previously saved APK Gateway URL (e.g. *.onrender.com) never overrides AI Studio's server.
-    if (!isApk && (window.location.hostname.includes('run.app') || window.location.hostname.includes('aistudio.google.com') || window.location.port === '3000')) {
-      try {
-        localStorage.removeItem(STORAGE_GATEWAY_KEY);
-      } catch (_) {}
+    if (clean === OFFLINE_MARKER) {
       return '';
     }
-    if (!isApk && (clean.includes('ais-pre-') || clean.includes('ais-dev-'))) {
+    // Auto-migrate legacy Render gateway URL to the new synced Render server
+    if (clean === 'https://tu70632.onrender.com') {
       try {
-        localStorage.removeItem(STORAGE_GATEWAY_KEY);
+        localStorage.setItem(STORAGE_GATEWAY_KEY, RENDER_CLOUD_API_URL);
       } catch (_) {}
-      return '';
+      return RENDER_CLOUD_API_URL;
     }
     if (clean.startsWith('http://') || clean.startsWith('https://')) {
       return clean;
     }
   }
 
-  // Note: In native Android APK, do not default to ais-pre/ais-dev Cloud Run URLs
-  // because AI Studio preview URLs require cookie authentication not available in APK WebViews.
-  // Direct Google Gemini REST API will be used for AI features on APK.
-  return '';
+  // Default Cloud Backend for Android APK
+  try {
+    localStorage.setItem(STORAGE_GATEWAY_KEY, RENDER_CLOUD_API_URL);
+  } catch (_) {}
+  return RENDER_CLOUD_API_URL;
 }
 
 /**
@@ -112,7 +143,7 @@ export function getDisplayApiBaseUrl(): string {
 }
 
 /**
- * Persists a custom API Gateway URL (or reset to default)
+ * Persists a custom API Gateway URL (or reset to offline/default)
  */
 export function setApiBaseUrl(url: string): void {
   if (typeof window === 'undefined') return;
@@ -120,6 +151,8 @@ export function setApiBaseUrl(url: string): void {
 
   if (clean && (clean.startsWith('http://') || clean.startsWith('https://'))) {
     localStorage.setItem(STORAGE_GATEWAY_KEY, clean);
+  } else if (isAndroidApkEnvironment()) {
+    localStorage.setItem(STORAGE_GATEWAY_KEY, OFFLINE_MARKER);
   } else {
     localStorage.removeItem(STORAGE_GATEWAY_KEY);
   }

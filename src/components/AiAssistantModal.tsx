@@ -17,7 +17,6 @@ import {
   Save,
   Settings,
 } from 'lucide-react';
-import type { User as FirebaseUser } from 'firebase/auth';
 import { ChatMessage } from '../types';
 import { sendAiChatRequest, streamAiChatRequest } from '../utils/geminiClient';
 import { testServerAiStatus } from '../utils/apiConfig';
@@ -29,7 +28,6 @@ interface AiAssistantModalProps {
   currentFileName: string;
   onApplyCode: (code: string) => void;
   lastErrorText?: string;
-  googleUser?: FirebaseUser | null;
   onOpenSettings?: () => void;
 }
 
@@ -61,7 +59,6 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
   currentFileName,
   onApplyCode,
   lastErrorText,
-  googleUser,
   onOpenSettings,
 }) => {
   const [savedCustomPrompt, setSavedCustomPrompt] = useState<string>(() => getStoredDefaultPrompt());
@@ -552,11 +549,6 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
               <p className="text-[10px] sm:text-[11px] text-gray-400 flex items-center space-x-1.5 truncate">
                 <FileCode className="w-3 h-3 text-sky-400 shrink-0" />
                 <span className="truncate">Đang đọc: <strong className="text-gray-200">{currentFileName}</strong></span>
-                {googleUser?.email && (
-                  <span className="text-emerald-300/90 font-medium truncate hidden sm:inline">
-                    • Google: {googleUser.email}
-                  </span>
-                )}
               </p>
             </div>
           </div>
@@ -690,7 +682,7 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
                   className="px-2.5 py-1 bg-amber-400 hover:bg-amber-300 text-black font-extrabold rounded-lg text-[10px] flex items-center space-x-1 shrink-0 cursor-pointer transition active:scale-95"
                 >
                   <Settings className="w-3 h-3" />
-                  <span>Tài khoản & Cài đặt</span>
+                  <span>Cài đặt AI & Máy chủ</span>
                 </button>
               )}
             </div>
